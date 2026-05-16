@@ -810,6 +810,79 @@ function calcCosts(project) {
   return { days, months, fixedCost, outsourceTotal, companyOutsource, personalOutsource, salesVAT, creditableInputTax, netVAT, profit, preTax, isOverseas };
 }
 
+// ---------- Cash flow timeline ----------
+// Returns a sorted list of cash events + the running balance at each point.
+// settings: { startDate, bankBalance, monthlyFixedExpense, deductionDay }
+// horizonMonths: how many months forward to project (default 12)
+function buildCashflowSeries(projects, settings, horizonMonths = 12) {
+  const start = settings.startDate ? new Date(settings.startDate) : new Date(TODAY);
+  start.setHours(0, 0, 0, 0);
+  const balance = Number(settings.bankBalance) || 0;
+  const monthlyExp = Number(settings.monthlyFixedExpense) || 0;
+  const deductionDay = Math.max(1, Math.min(31, Number(settings.deductionDay) || 31));
+  const end = new Date(start);
+  end.setMonth(end.getMonth() + horizonMonths);
+
+  const events = [];
+
+  // Monthly fixed expenses across the horizon
+  if (monthlyExp > 0) {
+    for (let i = 0; i < horizonMonths; i++) {
+      const month = new Date(start.getFullYear(), start.getMonth() + i, 1);
+      const lastDay = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+      const day = Math.min(deductionDay, lastDay);
+      const d = new Date(month.getFullYear(), month.getMonth(), day);
+      if (d < start || d > end) continue;
+      events.push({ date: d, amount: -monthlyExp, label: '每月固定支出', kind: 'fixed' });
+    }
+  }
+
+  // Project incoming + outgoing events
+  for (const p of projects) {
+    if (p.deleted) continue;
+    const budget = Number(p.budget) || 0;
+    const payments = getPayments(p);
+    for (const pay of payments) {
+      if (!pay.dueDate) continue;
+      const d = new Date(pay.dueDate);
+      if (isNaN(d) || d < start || d > end) continue;
+      const amt = budget * (Number(pay.percentage) || 0) / 100;
+      if (amt === 0) continue;
+      events.push({ date: d, amount: amt, label: `${p.title} · ${pay.label}`, kind: 'income' });
+    }
+    const outDate = getOutsourcePayDate(p);
+    if (outDate) {
+      const d = new Date(outDate);
+      if (!isNaN(d) && d >= start && d <= end) {
+        const outTotal = (p.outsources || []).reduce((a, o) => a + (Number(o.amount) || 0), 0);
+        if (outTotal > 0) {
+          events.push({ date: d, amount: -outTotal, label: `${p.title} · 外包付款`, kind: 'outsource' });
+        }
+      }
+    }
+  }
+
+  events.sort((a, b) => a.date - b.date);
+
+  // Cumulative points; first point is the starting balance
+  let running = balance;
+  const points = [{ date: new Date(start), balance: running, label: '起算日', amount: 0, kind: 'start' }];
+  for (const e of events) {
+    running += e.amount;
+    points.push({ date: e.date, balance: running, label: e.label, amount: e.amount, kind: e.kind });
+  }
+  // Add a synthetic point at the horizon end so the line extends to the right edge
+  if (points[points.length - 1].date < end) {
+    points.push({ date: new Date(end), balance: running, label: '', amount: 0, kind: 'end' });
+  }
+
+  const minBalance = Math.min(...points.map(p => p.balance));
+  const goesNegative = minBalance < 0;
+  const negativeAt = goesNegative ? points.find(p => p.balance < 0) : null;
+
+  return { points, events, startBalance: balance, minBalance, goesNegative, negativeAt, start, end };
+}
+
 function PaymentSchedule({ project, onUpdate }) {
   const payments = getPayments(project);
   const budget = Number(project.budget) || 0;
@@ -1456,6 +1529,183 @@ function ConfigMissingScreen() {
   );
 }
 
+// ---------- Cash flow chart ----------
+function CashflowChart({ series }) {
+  const canvasRef = useRef(null);
+  const chartRef = useRef(null);
+
+  useEffect(() => {
+    if (!window.Chart || !canvasRef.current) return;
+    const ctx = canvasRef.current.getContext('2d');
+
+    // Compute days-since-start for each point so x-axis is proportional to time.
+    const start = series.start;
+    const dayOf = (d) => Math.round((d - start) / 86400000);
+    const data = series.points.map(p => ({ x: dayOf(p.date), y: p.balance, meta: p }));
+
+    const minBalance = series.minBalance;
+    const startBalance = series.startBalance;
+    const fillColor = series.goesNegative ? 'rgba(239,68,68,0.10)' : 'rgba(16,185,129,0.10)';
+    const lineColor = series.goesNegative ? '#ef4444' : '#10b981';
+
+    const horizonDays = Math.round((series.end - start) / 86400000);
+
+    // Format a day-offset back to date for axis ticks / tooltip
+    const fmtDayOffset = (offset) => {
+      const d = new Date(start);
+      d.setDate(d.getDate() + offset);
+      return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
+    };
+
+    if (chartRef.current) chartRef.current.destroy();
+
+    chartRef.current = new window.Chart(ctx, {
+      type: 'line',
+      data: {
+        datasets: [{
+          label: '帳戶餘額',
+          data,
+          stepped: 'before',
+          borderColor: lineColor,
+          backgroundColor: fillColor,
+          borderWidth: 2,
+          pointRadius: data.map(d => d.meta.kind === 'start' || d.meta.kind === 'end' ? 0 : 4),
+          pointHoverRadius: 6,
+          pointBackgroundColor: data.map(d => {
+            if (d.meta.kind === 'income') return '#10b981';
+            if (d.meta.kind === 'outsource') return '#f59e0b';
+            if (d.meta.kind === 'fixed') return '#ef4444';
+            return lineColor;
+          }),
+          pointBorderColor: '#ffffff',
+          pointBorderWidth: 1.5,
+          fill: true,
+          tension: 0,
+        }, {
+          // Zero baseline reference (dashed)
+          label: '_zero',
+          data: [{ x: 0, y: 0 }, { x: horizonDays, y: 0 }],
+          borderColor: 'rgba(160,160,160,0.45)',
+          borderWidth: 1,
+          borderDash: [4, 4],
+          pointRadius: 0,
+          fill: false,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 350 },
+        interaction: { mode: 'nearest', intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: (items) => {
+                const it = items[0];
+                if (!it || it.dataset.label === '_zero') return '';
+                return fmtDayOffset(it.parsed.x);
+              },
+              label: (item) => {
+                if (item.dataset.label === '_zero') return null;
+                const meta = item.raw.meta;
+                const bal = `餘額 ${fmtNT(item.parsed.y)}`;
+                if (meta.kind === 'start') return [meta.label, bal];
+                const sign = meta.amount >= 0 ? '+' : '−';
+                const amt = fmtNT(Math.abs(meta.amount));
+                return [meta.label, `${sign}${amt}`, bal];
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            type: 'linear',
+            min: 0,
+            max: horizonDays,
+            ticks: {
+              callback: (v) => fmtDayOffset(v),
+              maxTicksLimit: 8,
+              font: { size: 11 },
+              color: 'rgba(120,120,120,0.85)',
+            },
+            grid: { color: 'rgba(0,0,0,0.04)' },
+          },
+          y: {
+            ticks: {
+              callback: (v) => fmtNT(v),
+              font: { size: 11 },
+              color: 'rgba(120,120,120,0.85)',
+            },
+            grid: { color: 'rgba(0,0,0,0.04)' },
+          },
+        },
+      },
+    });
+
+    return () => {
+      if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; }
+    };
+  }, [series]);
+
+  return <canvas ref={canvasRef} />;
+}
+
+function CashflowPanel({ projects, settings, onOpenSettings }) {
+  const [open, setOpen] = useState(true);
+  const hasSettings = settings && (settings.bankBalance !== undefined && settings.bankBalance !== null && settings.bankBalance !== '');
+  const series = useMemo(
+    () => hasSettings ? buildCashflowSeries(projects, settings, 12) : null,
+    [projects, settings, hasSettings]
+  );
+
+  return (
+    <div className={`cashflow-panel ${open ? 'open' : 'closed'}`}>
+      <div className="cashflow-head">
+        <button className="cashflow-toggle" onClick={() => setOpen(o => !o)} title={open ? '收起' : '展開'}>
+          <span className="cashflow-chevron">{open ? '▾' : '▸'}</span>
+          <span className="cashflow-title">📈 現金流量表</span>
+          <span className="cashflow-sub">未來 12 個月預估</span>
+        </button>
+        <div className="cashflow-actions">
+          {hasSettings && series && (
+            <>
+              <span className="cashflow-stat">
+                起始 <strong>{fmtNT(series.startBalance)}</strong>
+              </span>
+              <span className="cashflow-stat">
+                最低點 <strong className={series.goesNegative ? 'neg' : ''}>{fmtNT(series.minBalance)}</strong>
+              </span>
+              {series.goesNegative && series.negativeAt && (
+                <span className="cashflow-stat warn">
+                  ⚠ {fmtDate(series.negativeAt.date)} 見底
+                </span>
+              )}
+            </>
+          )}
+          <button className="btn btn-ghost small" onClick={onOpenSettings} title="編輯現金流設定">
+            ⚙ 設定
+          </button>
+        </div>
+      </div>
+
+      {open && (
+        <div className="cashflow-body">
+          {!hasSettings ? (
+            <div className="cashflow-empty">
+              還沒設定起始銀行餘額。點右上角 <strong>💵</strong> 或 <button className="link-btn" onClick={onOpenSettings}>這裡</button> 填入起算日的銀行存款，圖表就會出來。
+            </div>
+          ) : (
+            <div className="cashflow-canvas-wrap">
+              <CashflowChart series={series} />
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------- Main app (auth wrapper) ----------
 function App() {
   const [session, setSession] = useState(null);
@@ -1826,6 +2076,12 @@ function Tracker({ session, onSignOut }) {
           <span style={{ marginLeft: 12, color: 'var(--text-4)' }}>{fmtDate(TODAY)} · TODAY</span>
         </div>
       </div>
+
+      <CashflowPanel
+        projects={activeProjects}
+        settings={globalSettings || {}}
+        onOpenSettings={() => setShowCashSettings(true)}
+      />
 
       <div className="card-list">
         {visible.length === 0 && (

@@ -1612,6 +1612,112 @@ input, textarea { font-family: inherit; }
   font-style: italic;
 }
 
+/* Cash flow panel */
+.cashflow-panel {
+  max-width: 1180px;
+  margin: 0 auto 18px;
+  padding: 0;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+.cashflow-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  flex-wrap: wrap;
+}
+.cashflow-panel.open .cashflow-head {
+  border-bottom: 1px solid var(--border);
+}
+.cashflow-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  padding: 4px 0;
+  cursor: pointer;
+  color: var(--text);
+  font: inherit;
+}
+.cashflow-chevron {
+  display: inline-block;
+  width: 14px;
+  font-size: 11px;
+  color: var(--text-3);
+  transition: transform 0.15s ease;
+}
+.cashflow-title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+.cashflow-sub {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  padding-left: 4px;
+}
+.cashflow-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.cashflow-stat {
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.cashflow-stat strong {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text);
+  margin-left: 2px;
+}
+.cashflow-stat strong.neg {
+  color: var(--warn, #ef4444);
+}
+.cashflow-stat.warn {
+  color: var(--warn, #ef4444);
+  font-weight: 500;
+}
+.cashflow-body {
+  padding: 14px 18px 18px;
+}
+.cashflow-canvas-wrap {
+  position: relative;
+  height: 280px;
+  width: 100%;
+}
+.cashflow-empty {
+  padding: 28px 14px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-3);
+  line-height: 1.6;
+}
+.cashflow-empty strong {
+  font-size: 14px;
+  margin: 0 2px;
+}
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+
 .type-toggle {
   display: flex;
   gap: 2px;
