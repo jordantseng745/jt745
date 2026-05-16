@@ -1615,7 +1615,7 @@ input, textarea { font-family: inherit; }
 /* Cash flow panel */
 .cashflow-panel {
   max-width: 1180px;
-  margin: 0 auto 18px;
+  margin: 24px auto 18px;
   padding: 0;
   background: var(--bg-elev);
   border: 1px solid var(--border);

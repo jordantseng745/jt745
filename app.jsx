@@ -880,7 +880,27 @@ function buildCashflowSeries(projects, settings, horizonMonths = 12) {
   const goesNegative = minBalance < 0;
   const negativeAt = goesNegative ? points.find(p => p.balance < 0) : null;
 
-  return { points, events, startBalance: balance, minBalance, goesNegative, negativeAt, start, end };
+  // Aggregate by month for the two-line chart (income vs expense).
+  const months = [];
+  for (let i = 0; i < horizonMonths; i++) {
+    const d = new Date(start.getFullYear(), start.getMonth() + i, 1);
+    months.push({
+      year: d.getFullYear(),
+      month: d.getMonth(),
+      label: `${String(d.getMonth() + 1).padStart(2, '0')}月`,
+      fullLabel: `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}`,
+      income: 0,
+      expense: 0,
+    });
+  }
+  for (const e of events) {
+    const mi = months.findIndex(m => m.year === e.date.getFullYear() && m.month === e.date.getMonth());
+    if (mi < 0) continue;
+    if (e.amount >= 0) months[mi].income += e.amount;
+    else months[mi].expense += -e.amount;
+  }
+
+  return { points, events, months, startBalance: balance, minBalance, goesNegative, negativeAt, start, end };
 }
 
 function PaymentSchedule({ project, onUpdate }) {
@@ -1530,6 +1550,7 @@ function ConfigMissingScreen() {
 }
 
 // ---------- Cash flow chart ----------
+// Two-line chart: monthly income vs monthly expense, sharp diagonals.
 function CashflowChart({ series }) {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
@@ -1538,100 +1559,86 @@ function CashflowChart({ series }) {
     if (!window.Chart || !canvasRef.current) return;
     const ctx = canvasRef.current.getContext('2d');
 
-    // Compute days-since-start for each point so x-axis is proportional to time.
-    const start = series.start;
-    const dayOf = (d) => Math.round((d - start) / 86400000);
-    const data = series.points.map(p => ({ x: dayOf(p.date), y: p.balance, meta: p }));
-
-    const minBalance = series.minBalance;
-    const startBalance = series.startBalance;
-    const fillColor = series.goesNegative ? 'rgba(239,68,68,0.10)' : 'rgba(16,185,129,0.10)';
-    const lineColor = series.goesNegative ? '#ef4444' : '#10b981';
-
-    const horizonDays = Math.round((series.end - start) / 86400000);
-
-    // Format a day-offset back to date for axis ticks / tooltip
-    const fmtDayOffset = (offset) => {
-      const d = new Date(start);
-      d.setDate(d.getDate() + offset);
-      return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
-    };
+    const months = series.months;
+    const labels = months.map(m => m.label);
+    const incomeData = months.map(m => m.income);
+    const expenseData = months.map(m => m.expense);
 
     if (chartRef.current) chartRef.current.destroy();
 
     chartRef.current = new window.Chart(ctx, {
       type: 'line',
       data: {
-        datasets: [{
-          label: '帳戶餘額',
-          data,
-          stepped: 'before',
-          borderColor: lineColor,
-          backgroundColor: fillColor,
-          borderWidth: 2,
-          pointRadius: data.map(d => d.meta.kind === 'start' || d.meta.kind === 'end' ? 0 : 4),
-          pointHoverRadius: 6,
-          pointBackgroundColor: data.map(d => {
-            if (d.meta.kind === 'income') return '#10b981';
-            if (d.meta.kind === 'outsource') return '#f59e0b';
-            if (d.meta.kind === 'fixed') return '#ef4444';
-            return lineColor;
-          }),
-          pointBorderColor: '#ffffff',
-          pointBorderWidth: 1.5,
-          fill: true,
-          tension: 0,
-        }, {
-          // Zero baseline reference (dashed)
-          label: '_zero',
-          data: [{ x: 0, y: 0 }, { x: horizonDays, y: 0 }],
-          borderColor: 'rgba(160,160,160,0.45)',
-          borderWidth: 1,
-          borderDash: [4, 4],
-          pointRadius: 0,
-          fill: false,
-        }],
+        labels,
+        datasets: [
+          {
+            label: '收入',
+            data: incomeData,
+            borderColor: '#10b981',
+            backgroundColor: 'rgba(16,185,129,0.16)',
+            borderWidth: 2.5,
+            pointRadius: 3,
+            pointHoverRadius: 6,
+            pointBackgroundColor: '#10b981',
+            pointBorderColor: '#ffffff',
+            pointBorderWidth: 1.5,
+            fill: true,
+            tension: 0,
+          },
+          {
+            label: '支出',
+            data: expenseData,
+            borderColor: '#ef4444',
+            backgroundColor: 'rgba(239,68,68,0.14)',
+            borderWidth: 2.5,
+            pointRadius: 3,
+            pointHoverRadius: 6,
+            pointBackgroundColor: '#ef4444',
+            pointBorderColor: '#ffffff',
+            pointBorderWidth: 1.5,
+            fill: true,
+            tension: 0,
+          },
+        ],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        animation: { duration: 350 },
-        interaction: { mode: 'nearest', intersect: false },
+        animation: { duration: 400 },
+        interaction: { mode: 'index', intersect: false },
         plugins: {
-          legend: { display: false },
+          legend: {
+            display: true,
+            position: 'top',
+            align: 'end',
+            labels: { font: { size: 12 }, boxWidth: 12, boxHeight: 12, padding: 14, usePointStyle: true, pointStyle: 'circle' },
+          },
           tooltip: {
             callbacks: {
               title: (items) => {
-                const it = items[0];
-                if (!it || it.dataset.label === '_zero') return '';
-                return fmtDayOffset(it.parsed.x);
+                const idx = items[0]?.dataIndex;
+                return idx != null ? months[idx].fullLabel : '';
               },
-              label: (item) => {
-                if (item.dataset.label === '_zero') return null;
-                const meta = item.raw.meta;
-                const bal = `餘額 ${fmtNT(item.parsed.y)}`;
-                if (meta.kind === 'start') return [meta.label, bal];
-                const sign = meta.amount >= 0 ? '+' : '−';
-                const amt = fmtNT(Math.abs(meta.amount));
-                return [meta.label, `${sign}${amt}`, bal];
+              label: (item) => ` ${item.dataset.label}  ${fmtNT(item.parsed.y)}`,
+              footer: (items) => {
+                if (items.length < 2) return '';
+                const inc = items.find(i => i.dataset.label === '收入')?.parsed.y || 0;
+                const exp = items.find(i => i.dataset.label === '支出')?.parsed.y || 0;
+                const net = inc - exp;
+                const sign = net >= 0 ? '+' : '−';
+                return `淨流  ${sign}${fmtNT(Math.abs(net))}`;
               },
             },
           },
         },
         scales: {
           x: {
-            type: 'linear',
-            min: 0,
-            max: horizonDays,
-            ticks: {
-              callback: (v) => fmtDayOffset(v),
-              maxTicksLimit: 8,
-              font: { size: 11 },
-              color: 'rgba(120,120,120,0.85)',
-            },
-            grid: { color: 'rgba(0,0,0,0.04)' },
+            ticks: { font: { size: 11 }, color: 'rgba(120,120,120,0.85)' },
+            grid: { display: false },
           },
           y: {
+            min: 0,
+            beginAtZero: true,
             ticks: {
               callback: (v) => fmtNT(v),
               font: { size: 11 },
@@ -1652,7 +1659,7 @@ function CashflowChart({ series }) {
 }
 
 function CashflowPanel({ projects, settings, onOpenSettings }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const hasSettings = settings && (settings.bankBalance !== undefined && settings.bankBalance !== null && settings.bankBalance !== '');
   const series = useMemo(
     () => hasSettings ? buildCashflowSeries(projects, settings, 12) : null,
@@ -1665,7 +1672,7 @@ function CashflowPanel({ projects, settings, onOpenSettings }) {
         <button className="cashflow-toggle" onClick={() => setOpen(o => !o)} title={open ? '收起' : '展開'}>
           <span className="cashflow-chevron">{open ? '▾' : '▸'}</span>
           <span className="cashflow-title">📈 現金流量表</span>
-          <span className="cashflow-sub">未來 12 個月預估</span>
+          <span className="cashflow-sub">未來 12 個月 · 月別收支</span>
         </button>
         <div className="cashflow-actions">
           {hasSettings && series && (
@@ -1674,7 +1681,7 @@ function CashflowPanel({ projects, settings, onOpenSettings }) {
                 起始 <strong>{fmtNT(series.startBalance)}</strong>
               </span>
               <span className="cashflow-stat">
-                最低點 <strong className={series.goesNegative ? 'neg' : ''}>{fmtNT(series.minBalance)}</strong>
+                最低點 <strong className={series.goesNegative ? 'neg' : ''}>{fmtNT(Math.max(0, series.minBalance))}</strong>
               </span>
               {series.goesNegative && series.negativeAt && (
                 <span className="cashflow-stat warn">
@@ -2077,12 +2084,6 @@ function Tracker({ session, onSignOut }) {
         </div>
       </div>
 
-      <CashflowPanel
-        projects={activeProjects}
-        settings={globalSettings || {}}
-        onOpenSettings={() => setShowCashSettings(true)}
-      />
-
       <div className="card-list">
         {visible.length === 0 && (
           <div className="empty-state">
@@ -2130,6 +2131,12 @@ function Tracker({ session, onSignOut }) {
           );
         })}
       </div>
+
+      <CashflowPanel
+        projects={activeProjects}
+        settings={globalSettings || {}}
+        onOpenSettings={() => setShowCashSettings(true)}
+      />
 
       <div className="footer-note">
         <div>JORDAN TSENG / PROJECT TRACKER v0.5</div>
