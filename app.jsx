@@ -32,6 +32,37 @@ const fmtDate = (d) => {
   return `${y}.${m}.${day}`;
 };
 const daysBetween = (a, b) => Math.ceil((b - a) / 86400000);
+const toISODate = (d) => {
+  if (!d) return '';
+  const dt = (d instanceof Date) ? d : new Date(d);
+  if (isNaN(dt)) return '';
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, '0');
+  const day = String(dt.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+const addDays = (d, n) => {
+  if (!d) return '';
+  const dt = (d instanceof Date) ? new Date(d) : new Date(d);
+  if (isNaN(dt)) return '';
+  dt.setDate(dt.getDate() + n);
+  return toISODate(dt);
+};
+// Compute payment schedule with defaults for legacy projects.
+const getPayments = (project) => {
+  if (Array.isArray(project.payments) && project.payments.length > 0) return project.payments;
+  return [
+    { id: 'pay-1', label: '頭期款', percentage: 50, dueDate: project.start || '' },
+    { id: 'pay-2', label: '尾款',   percentage: 50, dueDate: project.due   || '' },
+  ];
+};
+const getOutsourcePayDate = (project) => {
+  if (project.outsourcePayDate) return project.outsourcePayDate;
+  const payments = getPayments(project);
+  const last = payments[payments.length - 1];
+  if (!last?.dueDate) return '';
+  return addDays(last.dueDate, 5);
+};
 
 const makeStage = (tpl, statusOverride) => ({
   id: uid('s'),
@@ -121,6 +152,121 @@ const seed = () => {
   ];
 };
 
+// ---------- Daily quotes ----------
+const DAILY_QUOTES = [
+  // Naval Ravikant
+  { text: '如果你不能決定，答案就是不要。', author: 'Naval Ravikant' },
+  { text: '追求財富，而非金錢或地位。財富是你睡覺時仍在為你工作的資產。', author: 'Naval Ravikant' },
+  { text: '把自己產品化：找到你獨特的技能，用槓桿放大它。', author: 'Naval Ravikant' },
+  { text: '閱讀不是為了完成一本書，而是為了完成一個想法。', author: 'Naval Ravikant' },
+  { text: '忙碌不等於生產力。真正厲害的人，看起來總是很從容。', author: 'Naval Ravikant' },
+  { text: '幸福是一種技能，可以透過練習獲得。', author: 'Naval Ravikant' },
+  { text: '最好的工作，是那些看起來像玩樂的工作。', author: 'Naval Ravikant' },
+  { text: '真正的財富是不需要為了錢而出賣時間。', author: 'Naval Ravikant' },
+  { text: '你不需要很多人認同你，只需要少數對的人。', author: 'Naval Ravikant' },
+  { text: '學會獨處而不感到孤獨，是一種超能力。', author: 'Naval Ravikant' },
+  { text: '比起管理時間，更重要的是管理精力。', author: 'Naval Ravikant' },
+  { text: '槓桿來自程式碼、媒體和資本——這些東西在你睡覺時也能運作。', author: 'Naval Ravikant' },
+  { text: '長期思考是最大的競爭優勢，因為很少人願意這樣做。', author: 'Naval Ravikant' },
+  { text: '焦慮是因為你同時想要做太多件事。平靜是當你知道哪件事最重要。', author: 'Naval Ravikant' },
+  { text: '所有回報，不論是財富、人脈或知識，都來自複利效應。', author: 'Naval Ravikant' },
+  { text: '選對方向比努力工作更重要。', author: 'Naval Ravikant' },
+  { text: '不要花時間去戰鬥，花時間去建造。', author: 'Naval Ravikant' },
+  { text: '你的聲譽是你最重要的資產。用長期主義來守護它。', author: 'Naval Ravikant' },
+  { text: '慾望是與他人比較的結果。快樂是不再比較。', author: 'Naval Ravikant' },
+  { text: '做不可被取代的事。如果一千個人能做你做的事，你不會得到好回報。', author: 'Naval Ravikant' },
+  // Elon Musk
+  { text: '如果有什麼事情夠重要，就算勝算不高，你也應該去做。', author: 'Elon Musk' },
+  { text: '堅持非常重要。除非你被迫放棄，否則不要放棄。', author: 'Elon Musk' },
+  { text: '失敗是一個選項。如果事情沒有失敗過，代表你的創新不夠多。', author: 'Elon Musk' },
+  { text: '當某件事夠重要，你就去做，即使所有條件都不利於你。', author: 'Elon Musk' },
+  { text: '我認為普通人也可以選擇不平凡。', author: 'Elon Musk' },
+  { text: '有些人不喜歡改變，但如果替代方案是災難，你就必須擁抱改變。', author: 'Elon Musk' },
+  { text: '與其花精力抱怨，不如把精力花在解決問題上。', author: 'Elon Musk' },
+  { text: '不斷質疑你的假設，用第一原理去思考。', author: 'Elon Musk' },
+  { text: '品牌只是一種感知。感知會在時間中追上現實。', author: 'Elon Musk' },
+  { text: '最好的零件是不存在的零件。最好的流程是不需要的流程。', author: 'Elon Musk' },
+  { text: '我不是在設立公司來設立公司。我是為了把事情做成。', author: 'Elon Musk' },
+  { text: '人生太短，不能花時間去做無聊的事。', author: 'Elon Musk' },
+  { text: '你的意志力要強到，連宇宙都會讓步。', author: 'Elon Musk' },
+  { text: '專注於信號，忽略噪音。不要把時間浪費在不會讓結果更好的事上。', author: 'Elon Musk' },
+  { text: '創業就像嚼著玻璃，凝視深淵。', author: 'Elon Musk' },
+  { text: '每週工作八十到一百個小時，才能提高成功的機率。', author: 'Elon Musk' },
+  { text: '如果你需要鼓勵的話，就不要創業了。', author: 'Elon Musk' },
+  { text: '不斷反饋迴路：想想你做了什麼，怎樣可以做得更好。', author: 'Elon Musk' },
+  { text: '耐心對於長期，不耐煩對於短期。', author: 'Elon Musk' },
+  { text: '試著去做有用的事，對你的同胞有用。', author: 'Elon Musk' },
+  // 黃仁勳
+  { text: '沒有人能阻止一個不願放棄的人。', author: '黃仁勳' },
+  { text: '我的成功祕訣是：我對成功的恐懼遠大於對失敗的恐懼。', author: '黃仁勳' },
+  { text: '你必須要有遠見，但同時也要有能力承受短期的痛苦。', author: '黃仁勳' },
+  { text: '不要追求容易的事。追求偉大的事，即使那意味著受苦。', author: '黃仁勳' },
+  { text: '公司的使命感，比策略更重要。', author: '黃仁勳' },
+  { text: '光有速度是不夠的，你必須朝對的方向跑。', author: '黃仁勳' },
+  { text: '我不是因為有自信才做這些事，我是因為害怕所以才這麼拚命。', author: '黃仁勳' },
+  { text: '世界不會等你準備好。你必須一邊跑一邊調整。', author: '黃仁勳' },
+  { text: '我希望你們都能經歷足夠的痛苦和磨難，因為韌性對成功至關重要。', author: '黃仁勳' },
+  { text: '最重要的能力是從錯誤中快速學習。', author: '黃仁勳' },
+  { text: '企業文化是你唯一不可複製的競爭優勢。', author: '黃仁勳' },
+  { text: '專注在少數重要的事情上，然後做到極致。', author: '黃仁勳' },
+  { text: '科技改變世界的速度比任何人想像的都快。保持學習。', author: '黃仁勳' },
+  { text: '成功的人和不成功的人之間的差距，就是堅持的時間長度。', author: '黃仁勳' },
+  { text: '你需要有承受孤獨的能力。很多重大決定，只有你自己才能做。', author: '黃仁勳' },
+  { text: '你必須對你正在做的事充滿熱情，否則你撐不過艱難的時刻。', author: '黃仁勳' },
+  { text: '創新不是選擇，是生存的必要條件。', author: '黃仁勳' },
+  { text: '卓越不是一個動作，是一個習慣。', author: '黃仁勳' },
+  { text: '用十年的眼光做今天的決定。', author: '黃仁勳' },
+  { text: '如果我重新來過，我不確定自己還有勇氣再創辦 NVIDIA。', author: '黃仁勳' },
+  // 巴菲特
+  { text: '別人恐懼時我貪婪，別人貪婪時我恐懼。', author: '巴菲特' },
+  { text: '價格是你付出的，價值是你得到的。', author: '巴菲特' },
+  { text: '最好的投資就是投資自己。', author: '巴菲特' },
+  { text: '只要不虧錢，其他一切都會慢慢好起來。', author: '巴菲特' },
+  { text: '時間是好公司的朋友，是壞公司的敵人。', author: '巴菲特' },
+  { text: '在商業世界裡，後照鏡永遠比擋風玻璃更清楚。', author: '巴菲特' },
+  { text: '當潮水退去，你才知道誰在裸泳。', author: '巴菲特' },
+  { text: '誠實是最昂貴的禮物。不要期望從廉價的人那裡得到它。', author: '巴菲特' },
+  { text: '你不需要做很多對的事，只要不做太多錯的事。', author: '巴菲特' },
+  { text: '能力圈很重要：知道自己不知道什麼，比什麼都知道更有價值。', author: '巴菲特' },
+  { text: '習慣是一條太細的線，細到你感覺不到，直到它變成一條斷不了的繩。', author: '巴菲特' },
+  { text: '風險來自於你不知道自己在做什麼。', author: '巴菲特' },
+  { text: '我總是知道我會變得富有。我從來沒有懷疑過。', author: '巴菲特' },
+  { text: '你只需要做幾件正確的大事，只要你不做太多錯的事。', author: '巴菲特' },
+  { text: '建立聲譽需要二十年，毀掉它只需要五分鐘。', author: '巴菲特' },
+  { text: '不要用借來的錢去投資。', author: '巴菲特' },
+  { text: '如果你發現自己在一艘漏水的船上，換一艘船比補漏洞更有效率。', author: '巴菲特' },
+  { text: '機會不常來。天上掉金子時，拿桶去接，不是拿頂針。', author: '巴菲特' },
+  { text: '永遠不要問理髮師你是否需要理髮。', author: '巴菲特' },
+  { text: '我很理性。很多人比我聰明，但我更理性。', author: '巴菲特' },
+  // 老子
+  { text: '千里之行，始於足下。', author: '老子' },
+  { text: '知人者智，自知者明。', author: '老子' },
+  { text: '上善若水。水善利萬物而不爭。', author: '老子' },
+  { text: '天下難事，必作於易；天下大事，必作於細。', author: '老子' },
+  { text: '道生一，一生二，二生三，三生萬物。', author: '老子' },
+  { text: '禍兮福之所倚，福兮禍之所伏。', author: '老子' },
+  { text: '大器晚成。大音希聲。大象無形。', author: '老子' },
+  { text: '知足者富。強行者有志。', author: '老子' },
+  { text: '飄風不終朝，驟雨不終日。', author: '老子' },
+  { text: '無為而無不為。', author: '老子' },
+  { text: '知者不言，言者不知。', author: '老子' },
+  { text: '合抱之木，生於毫末；九層之臺，起於累土。', author: '老子' },
+  { text: '天之道，利而不害。聖人之道，為而不爭。', author: '老子' },
+  { text: '大直若屈，大巧若拙，大辯若訥。', author: '老子' },
+  { text: '柔弱勝剛強。', author: '老子' },
+  { text: '為學日益，為道日損。', author: '老子' },
+  { text: '輕諾必寡信，多易必多難。', author: '老子' },
+  { text: '慎終如始，則無敗事。', author: '老子' },
+  { text: '天下莫柔弱於水，而攻堅強者莫之能勝。', author: '老子' },
+  { text: '民不畏死，奈何以死懼之。', author: '老子' },
+];
+
+function getDailyQuote() {
+  const start = new Date(TODAY.getFullYear(), 0, 0);
+  const dayOfYear = Math.floor((TODAY - start) / 86400000);
+  return DAILY_QUOTES[dayOfYear % DAILY_QUOTES.length];
+}
+
 // ---------- Tweak defaults ----------
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "stageVariant": "bar",
@@ -183,6 +329,28 @@ async function saveOrderInDB(orderedIds) {
   ));
 }
 
+// ---------- User settings (global cash-flow params) ----------
+async function loadUserSettings() {
+  const { data: { user } } = await supa.auth.getUser();
+  if (!user) return null;
+  const { data, error } = await supa
+    .from('user_settings')
+    .select('data')
+    .eq('owner_id', user.id)
+    .maybeSingle();
+  if (error) { console.error('[loadUserSettings] failed:', error.message); return null; }
+  return data?.data || {};
+}
+
+async function saveUserSettings(settings) {
+  const { data: { user } } = await supa.auth.getUser();
+  if (!user) return;
+  const { error } = await supa
+    .from('user_settings')
+    .upsert({ owner_id: user.id, data: settings, updated_at: new Date().toISOString() });
+  if (error) console.error('[saveUserSettings] failed:', error.message);
+}
+
 // ---------- Celebration helpers ----------
 // Stage burst: emerald-leaning, small. Project complete: warm-spectrum, big.
 // Both colour sets lean warm/saturated — research on dopamine-eliciting palettes
@@ -192,7 +360,10 @@ const PROJECT_BURST_COLORS  = ['#10b981', '#34d399', '#fbbf24', '#eab308', '#fb7
 
 function projectPct(project) {
   const total = project.stages.reduce((a, s) => a + s.items.length, 0);
-  const done  = project.stages.reduce((a, s) => a + s.items.filter(it => it.done).length, 0);
+  const done  = project.stages.reduce((a, s) => a + s.items.filter(it => {
+    const st = itemStatus(it);
+    return st === 'done' || st === 'confirmed';
+  }).length, 0);
   return total ? Math.round((done / total) * 100) : 0;
 }
 
@@ -316,19 +487,60 @@ function InsertGap({ onInsert }) {
   );
 }
 
+const ITEM_STATES = ['todo', 'active', 'blocked', 'done', 'confirmed'];
+const ITEM_STATE_LABELS = { todo: '未開始', active: '進行中', blocked: '排除問題', done: '已完成', confirmed: '已確認' };
+
+function itemStatus(it) {
+  if (it.status && ITEM_STATES.includes(it.status)) return it.status;
+  return it.done ? 'done' : 'todo';
+}
+
+function ItemStatusDropdown({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+
+  return (
+    <div className="item-status-dropdown" ref={ref}>
+      <button className={`item-bar-badge status-${value}`} onClick={(e) => { e.stopPropagation(); setOpen(!open); }}>
+        {ITEM_STATE_LABELS[value]}
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ marginLeft: 4 }}><path d="M2.5 4l2.5 2.5L7.5 4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+      </button>
+      {open && (
+        <div className="item-status-menu">
+          {ITEM_STATES.map(st => (
+            <button key={st} className={`item-status-option status-${st} ${st === value ? 'current' : ''}`} onClick={(e) => { e.stopPropagation(); onChange(st); setOpen(false); }}>
+              <span className="item-status-dot"></span>
+              {ITEM_STATE_LABELS[st]}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ChecklistEditor({ stage, onUpdate }) {
   const [draft, setDraft] = useState('');
   const inputRef = useRef(null);
 
-  const toggle = (id) => {
-    const items = stage.items.map(it => it.id === id ? { ...it, done: !it.done } : it);
-    // Auto-advance status from checklist progress
+  const setItemStatus = (id, newStatus) => {
+    const items = stage.items.map(it => {
+      if (it.id !== id) return it;
+      return { ...it, status: newStatus, done: newStatus === 'done' || newStatus === 'confirmed' };
+    });
     let status = stage.status;
-    const allDone = items.length > 0 && items.every(it => it.done);
-    const anyDone = items.some(it => it.done);
-    if (allDone) status = 'done';
-    else if (status === 'done' && !allDone) status = 'active';
-    else if (status === 'todo' && anyDone) status = 'active';
+    const allConfirmed = items.length > 0 && items.every(it => itemStatus(it) === 'confirmed');
+    const anyStarted = items.some(it => itemStatus(it) !== 'todo');
+    if (allConfirmed) status = 'done';
+    else if (status === 'done' && !allConfirmed) status = 'active';
+    else if (status === 'todo' && anyStarted) status = 'active';
     onUpdate({ ...stage, items, status });
   };
   const remove = (id) => {
@@ -339,51 +551,71 @@ function ChecklistEditor({ stage, onUpdate }) {
     if (!draft.trim()) return;
     onUpdate({
       ...stage,
-      items: [...stage.items, { id: uid('i'), text: draft.trim(), done: false }]
+      items: [...stage.items, { id: uid('i'), text: draft.trim(), done: false, status: 'todo' }]
     });
     setDraft('');
     setTimeout(() => inputRef.current?.focus(), 0);
   };
 
-  const doneCount = stage.items.filter(it => it.done).length;
+  const confirmedCount = stage.items.filter(it => itemStatus(it) === 'confirmed').length;
+  const doneCount = stage.items.filter(it => itemStatus(it) === 'done').length;
+  const activeCount = stage.items.filter(it => itemStatus(it) === 'active').length;
+  const blockedCount = stage.items.filter(it => itemStatus(it) === 'blocked').length;
 
   return (
-    <div className="detail-section">
+    <div className="detail-section" style={{ gridColumn: '1 / -1' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div className="section-label">檢查清單</div>
-        <div className="stage-progress-mini">{doneCount} / {stage.items.length}</div>
+        <div className="section-label">工作項目</div>
+        <div className="stage-progress-mini">
+          {confirmedCount > 0 && <span>{confirmedCount} 確認 · </span>}
+          {doneCount > 0 && <span>{doneCount} 完成 · </span>}
+          {activeCount > 0 && <span>{activeCount} 進行中 · </span>}
+          {blockedCount > 0 && <span className="blocked-count">{blockedCount} 排除問題 · </span>}
+          共 {stage.items.length}
+        </div>
       </div>
-      <div className="checklist">
-        {stage.items.map(it => (
-          <div key={it.id} className={`check-item ${it.done ? 'checked' : ''}`}>
-            <div className={`check-box ${it.done ? 'checked' : ''}`} onClick={() => toggle(it.id)} role="checkbox" aria-checked={it.done}></div>
-            {it.editing ? (
-              <input className="input check-edit" autoFocus defaultValue={it.text}
-                onBlur={(e) => onUpdate({ ...stage, items: stage.items.map(x => x.id === it.id ? { ...x, text: e.target.value || x.text, editing: false } : x) })}
-                onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') onUpdate({ ...stage, items: stage.items.map(x => x.id === it.id ? { ...x, editing: false } : x) }); }}
-              />
-            ) : (
-              <div className="check-text" onClick={() => toggle(it.id)} onDoubleClick={() => onUpdate({ ...stage, items: stage.items.map(x => x.id === it.id ? { ...x, editing: true } : x) })} title="點擊勾選 / 雙擊編輯">{it.text}</div>
-            )}
-            {it.link ? (
-              <a href={it.link} target="_blank" rel="noopener noreferrer" className="item-link" title={it.link}>↗</a>
-            ) : null}
-            <button className="item-link-btn" title={it.link ? '編輯連結' : '加入連結'} onClick={() => {
-              const v = prompt('貼上該項目的成果連結（留空可移除）：', it.link || '');
-              if (v === null) return;
-              onUpdate({ ...stage, items: stage.items.map(x => x.id === it.id ? { ...x, link: v.trim() || null } : x) });
-            }}>
-              <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M6 8a2.5 2.5 0 0 0 3.5 0l2-2a2.5 2.5 0 0 0-3.5-3.5L7 3.5M8 6a2.5 2.5 0 0 0-3.5 0l-2 2a2.5 2.5 0 0 0 3.5 3.5L7 10.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>
-            </button>
-            <button className="delete-item" onClick={() => remove(it.id)} title="刪除">×</button>
-          </div>
-        ))}
+      <div className="item-bars">
+        {stage.items.map(it => {
+          const st = itemStatus(it);
+          return (
+            <div key={it.id} className={`item-bar status-${st}`}>
+              <div className="item-bar-actions-left">
+                {it.link && <a href={it.link} target="_blank" rel="noopener noreferrer" className="item-bar-link" title={it.link}>↗</a>}
+                <button className="item-bar-action" title={it.link ? '編輯連結' : '加入連結'} onClick={() => {
+                  const v = prompt('貼上該項目的成果連結（留空可移除）：', it.link || '');
+                  if (v === null) return;
+                  onUpdate({ ...stage, items: stage.items.map(x => x.id === it.id ? { ...x, link: v.trim() || null } : x) });
+                }}>
+                  <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M6 8a2.5 2.5 0 0 0 3.5 0l2-2a2.5 2.5 0 0 0-3.5-3.5L7 3.5M8 6a2.5 2.5 0 0 0-3.5 0l-2 2a2.5 2.5 0 0 0 3.5 3.5L7 10.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>
+                </button>
+                <button className="item-bar-action" onClick={() => {
+                  const items = stage.items.map(x => x.id === it.id ? { ...x, editing: true } : x);
+                  onUpdate({ ...stage, items });
+                }} title="重新命名">
+                  <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M10.5 2.5l1 1-7 7H3v-1.5l7-7z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                </button>
+                <button className="item-bar-action danger" onClick={() => remove(it.id)} title="刪除">×</button>
+              </div>
+              {it.editing ? (
+                <div className="item-bar-text-area">
+                  <input className="input item-bar-edit" autoFocus defaultValue={it.text}
+                    onBlur={(e) => onUpdate({ ...stage, items: stage.items.map(x => x.id === it.id ? { ...x, text: e.target.value || x.text, editing: false } : x) })}
+                    onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') onUpdate({ ...stage, items: stage.items.map(x => x.id === it.id ? { ...x, editing: false } : x) }); }}
+                  />
+                </div>
+              ) : (
+                <span className="item-bar-text">{it.text}</span>
+              )}
+              <ItemStatusDropdown value={st} onChange={(newSt) => setItemStatus(it.id, newSt)} />
+            </div>
+          );
+        })}
       </div>
       <form className="add-item-row" onSubmit={add}>
         <input
           ref={inputRef}
           className="input"
-          placeholder="新增檢查項目…"
+          placeholder="新增工作項目…"
           value={draft}
           onChange={e => setDraft(e.target.value)}
         />
@@ -400,12 +632,24 @@ function StageDetail({ project, stageId, onClose, onUpdateStage, onDeleteStage, 
   const update = (patch) => onUpdateStage(project.id, stageId, { ...stage, ...patch });
   const setStatus = (status) => {
     let items = stage.items;
-    if (status === 'done') items = items.map(it => ({ ...it, done: true }));
-    if (status === 'todo') items = items.map(it => ({ ...it, done: false }));
+    if (status === 'done') items = items.map(it => ({ ...it, done: true, status: 'confirmed' }));
+    if (status === 'active') items = items.map(it => itemStatus(it) === 'todo' ? { ...it, status: 'active', done: false } : it);
+    if (status === 'todo') items = items.map(it => ({ ...it, done: false, status: 'todo' }));
     update({ status, items });
   };
   // mark autoNote when items fully done
   const allDone = stage.items.length > 0 && stage.items.every(it => it.done);
+
+  const allItemsDone = stage.items.length > 0 && stage.items.every(it => {
+    const st = itemStatus(it);
+    return st === 'done' || st === 'confirmed';
+  });
+
+  const completeAll = () => {
+    const items = stage.items.map(it => ({ ...it, status: 'done', done: true }));
+    update({ items, status: 'done' });
+    celebrateStage(stageId);
+  };
 
   const [renaming, setRenaming] = useState(false);
   const [labelDraft, setLabelDraft] = useState(stage.label);
@@ -431,7 +675,12 @@ function StageDetail({ project, stageId, onClose, onUpdateStage, onDeleteStage, 
             )}
           </h3>
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {!allItemsDone && stage.items.length > 0 && (
+            <button className="btn-complete-all" onClick={completeAll} title="將所有工作項目標為已完成">
+              ✓ 全部完成
+            </button>
+          )}
           <button className="close-btn" onClick={() => { if (confirm(`確定刪除「${stage.label}」階段？`)) onDeleteStage(project.id, stageId); }} aria-label="刪除階段" title="刪除這個階段">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 4h8M5.5 4V2.5a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1V4M4 4l.5 7a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1L10 4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
           </button>
@@ -551,11 +800,96 @@ function calcCosts(project) {
     if (o.taxable) creditableInputTax += (Number(o.amount) || 0) * 0.05;
   });
 
-  const salesVAT = (project.budget || 0) * 0.05;
-  const netVAT = Math.max(0, salesVAT - creditableInputTax);
-  const profit = (project.budget || 0) - fixedCost - outsourceTotal - netVAT;
+  const isOverseas = project.overseas === true;
+  const budget = project.budget || 0;
+  const preTax = isOverseas ? budget : Math.round(budget / 1.05);
+  const salesVAT = isOverseas ? 0 : budget - preTax;
+  const netVAT = isOverseas ? 0 : Math.max(0, salesVAT - creditableInputTax);
+  const profit = budget - fixedCost - outsourceTotal - netVAT;
 
-  return { days, months, fixedCost, outsourceTotal, companyOutsource, personalOutsource, salesVAT, creditableInputTax, netVAT, profit };
+  return { days, months, fixedCost, outsourceTotal, companyOutsource, personalOutsource, salesVAT, creditableInputTax, netVAT, profit, preTax, isOverseas };
+}
+
+function PaymentSchedule({ project, onUpdate }) {
+  const payments = getPayments(project);
+  const budget = Number(project.budget) || 0;
+  const totalPct = payments.reduce((a, p) => a + (Number(p.percentage) || 0), 0);
+
+  // When changing one row's percentage, auto-balance the OTHER single row so total stays 100.
+  // (Only auto-balances for exactly 2 rows — the common 頭期/尾款 case.)
+  const setPercentage = (id, raw) => {
+    let pct = Number(raw);
+    if (!Number.isFinite(pct)) pct = 0;
+    pct = Math.max(0, Math.min(100, pct));
+    const next = payments.map(p => ({ ...p }));
+    const idx = next.findIndex(p => p.id === id);
+    if (idx < 0) return;
+    next[idx].percentage = pct;
+    if (next.length === 2) {
+      const otherIdx = idx === 0 ? 1 : 0;
+      next[otherIdx].percentage = Math.max(0, 100 - pct);
+    }
+    onUpdate({ ...project, payments: next });
+  };
+
+  const setDate = (id, dueDate) => {
+    const next = payments.map(p => p.id === id ? { ...p, dueDate } : p);
+    onUpdate({ ...project, payments: next });
+  };
+
+  const setOutsourcePayDate = (val) => {
+    onUpdate({ ...project, outsourcePayDate: val });
+  };
+
+  const outsourcePayDate = getOutsourcePayDate(project);
+  const hasOutsources = (project.outsources || []).length > 0;
+
+  return (
+    <div className="cost-section">
+      <div className="cost-section-h">
+        <div className="cost-block-h">
+          <span className="block-emoji">📅</span>
+          <span>收款排程</span>
+          <span className="ghost-pill">合計 {totalPct}%</span>
+        </div>
+      </div>
+
+      <div className="payment-list">
+        <div className="payment-row head">
+          <div>款項</div>
+          <div className="center">比例</div>
+          <div>預計收款日</div>
+          <div className="right">金額（含稅）</div>
+        </div>
+        {payments.map(p => (
+          <div key={p.id} className="payment-row">
+            <div className="payment-label">{p.label}</div>
+            <div className="pct-input-wrap">
+              <input type="number" className="num-input pct-input"
+                min="0" max="100" step="1"
+                value={p.percentage}
+                onChange={e => setPercentage(p.id, e.target.value)} />
+              <span className="pct-sign">%</span>
+            </div>
+            <input type="date" className="date-input compact"
+              value={p.dueDate || ''}
+              onChange={e => setDate(p.id, e.target.value)} />
+            <div className="num-val right">{fmtNT(budget * (Number(p.percentage) || 0) / 100)}</div>
+          </div>
+        ))}
+      </div>
+
+      {hasOutsources && (
+        <div className="payment-aux">
+          <span className="aux-label">外包付款日</span>
+          <input type="date" className="date-input compact"
+            value={outsourcePayDate}
+            onChange={e => setOutsourcePayDate(e.target.value)} />
+          <span className="aux-hint">預設 = 尾款日 +5 天，可自行調整</span>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function CostPanel({ project, onUpdate }) {
@@ -583,8 +917,12 @@ function CostPanel({ project, onUpdate }) {
         </div>
         <div className="cost-summary">
           <div className="summary-item">
-            <div className="summary-label">合約金額</div>
+            <div className="summary-label">合約金額（含稅）</div>
             <div className="summary-value">{fmtNT(project.budget)}</div>
+          </div>
+          <div className="summary-item">
+            <div className="summary-label">未稅金額</div>
+            <div className="summary-value">{fmtNT(c.preTax)}</div>
           </div>
           <div className="summary-item">
             <div className="summary-label">總成本</div>
@@ -633,20 +971,42 @@ function CostPanel({ project, onUpdate }) {
             <span>稅務</span>
           </div>
           <div className="cost-row-line">
-            <span>銷項稅 (5%)</span>
-            <span className="num-val">{fmtNT(c.salesVAT)}</span>
+            <span>案件類型</span>
+            <div className="type-toggle">
+              <button className={!project.overseas ? 'on' : ''} onClick={() => update({ overseas: false })}>國內案</button>
+              <button className={project.overseas ? 'on' : ''} onClick={() => update({ overseas: true })}>國外案</button>
+            </div>
           </div>
-          <div className="cost-row-line">
-            <span>可抵扣進項稅</span>
-            <span className="num-val">− {fmtNT(c.creditableInputTax)}</span>
-          </div>
-          <div className="cost-row-line emphasis">
-            <span>應繳營業稅</span>
-            <span className="num-val">{fmtNT(c.netVAT)}</span>
-          </div>
-          <div className="tax-hint">公司外包可抵 5% 進項稅，個人外包無發票故不可抵</div>
+          {c.isOverseas ? (
+            <>
+              <div className="cost-row-line emphasis">
+                <span>應繳營業稅</span>
+                <span className="num-val">{fmtNT(0)}</span>
+              </div>
+              <div className="tax-hint">境外交易依加值型及非加值型營業稅法規定，於一定金額內免徵營業稅。</div>
+            </>
+          ) : (
+            <>
+              <div className="cost-row-line">
+                <span>銷項稅（含稅價拆算）</span>
+                <span className="num-val">{fmtNT(c.salesVAT)}</span>
+              </div>
+              <div className="cost-row-line">
+                <span>可抵扣進項稅</span>
+                <span className="num-val">− {fmtNT(c.creditableInputTax)}</span>
+              </div>
+              <div className="cost-row-line emphasis">
+                <span>應繳營業稅</span>
+                <span className="num-val">{fmtNT(c.netVAT)}</span>
+              </div>
+              <div className="tax-hint">合約金額為含稅價，稅額 = 含稅價 ÷ 1.05 × 5%。公司外包可抵進項稅，個人外包無發票不可抵。</div>
+            </>
+          )}
         </div>
       </div>
+
+      {/* Payment schedule (cash in) */}
+      <PaymentSchedule project={project} onUpdate={onUpdate} />
 
       {/* Outsource list */}
       <div className="cost-section">
@@ -704,6 +1064,8 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
   const days = daysBetween(TODAY, due);
   const warn = days <= 14 && days >= 0;
 
+  const [showEditModal, setShowEditModal] = useState(false);
+
   const totalItems = project.stages.reduce((a, s) => a + s.items.length, 0);
   const doneItems = project.stages.reduce((a, s) => a + s.items.filter(it => it.done).length, 0);
   const pct = totalItems ? Math.round((doneItems / totalItems) * 100) : 0;
@@ -743,10 +1105,13 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
                 歸檔
               </button>
             )}
-            <button className={`card-action ${project.infoOpen ? 'on' : ''}`} onClick={() => onUpdateProject(project.id, { infoOpen: !project.infoOpen, costsOpen: false })} title="專案資訊">
+            <button className="card-action" onClick={() => setShowEditModal(true)} title="編輯專案基本資料">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M10.5 2.5l1 1-7 7H3v-1.5l7-7z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            </button>
+            <button className={`card-action ${project.infoOpen ? 'on' : ''}`} onClick={() => { onCloseDetail(); onUpdateProject(project.id, { infoOpen: !project.infoOpen, costsOpen: false }); }} title="專案資訊">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.2"/><path d="M7 6v4M7 4v.01" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
             </button>
-            <button className={`card-action ${project.costsOpen ? 'on' : ''}`} onClick={() => onUpdateProject(project.id, { costsOpen: !project.costsOpen, infoOpen: false })} title="財務細節">
+            <button className={`card-action ${project.costsOpen ? 'on' : ''}`} onClick={() => { onCloseDetail(); onUpdateProject(project.id, { costsOpen: !project.costsOpen, infoOpen: false }); }} title="財務細節">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v12M3.5 3.5h5a2 2 0 1 1 0 4h-3a2 2 0 1 0 0 4h5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>
             </button>
             <button className="card-action danger" onClick={() => onDeleteProject(project.id)} title="移到垃圾桶（可從垃圾桶分頁復原）">
@@ -822,6 +1187,75 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
       {project.costsOpen && (
         <CostPanel project={project} onUpdate={(p) => onUpdateProject(project.id, p)} />
       )}
+
+      {showEditModal && (
+        <EditProjectModal
+          project={project}
+          onClose={() => setShowEditModal(false)}
+          onSave={(patch) => { onUpdateProject(project.id, patch); setShowEditModal(false); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function EditProjectModal({ project, onClose, onSave }) {
+  const [form, setForm] = useState({
+    title: project.title || '',
+    client: project.client || '',
+    budget: project.budget || '',
+    start: project.start || '',
+    due: project.due || '',
+  });
+
+  const valid = form.title.trim() && form.client.trim() && form.budget && form.due;
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (!valid) return;
+    onSave({
+      title: form.title.trim(),
+      client: form.client.trim(),
+      budget: Number(form.budget),
+      start: form.start,
+      due: form.due,
+    });
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modal">
+        <h2>編輯專案資訊</h2>
+        <div className="modal-sub">修改後按「儲存」即可更新</div>
+        <form className="modal-form" onSubmit={submit}>
+          <div className="field">
+            <label className="field-label">專案名稱</label>
+            <input className="input" autoFocus value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} />
+          </div>
+          <div className="field">
+            <label className="field-label">客戶名稱</label>
+            <input className="input" value={form.client} onChange={e => setForm({ ...form, client: e.target.value })} />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div className="field">
+              <label className="field-label">合約金額 (NT$)</label>
+              <input className="input" type="number" value={form.budget} onChange={e => setForm({ ...form, budget: e.target.value })} />
+            </div>
+            <div className="field">
+              <label className="field-label">起始日期</label>
+              <input className="date-input" type="date" value={form.start} onChange={e => setForm({ ...form, start: e.target.value })} />
+            </div>
+          </div>
+          <div className="field">
+            <label className="field-label">交件日期</label>
+            <input className="date-input" type="date" value={form.due} onChange={e => setForm({ ...form, due: e.target.value })} />
+          </div>
+          <div className="modal-actions">
+            <button type="button" className="btn btn-ghost" onClick={onClose}>取消 (Esc)</button>
+            <button type="submit" className="btn btn-primary" disabled={!valid}>儲存</button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }
@@ -1109,6 +1543,16 @@ function Tracker({ session, onSignOut }) {
 
   // ---- Stage ops ----
   const onStageClick = (projectId, stageId) => {
+    setProjects(prev => {
+      const p = prev.find(p => p.id === projectId);
+      if (p && (p.infoOpen || p.costsOpen)) {
+        const next = prev.map(p => p.id === projectId ? { ...p, infoOpen: false, costsOpen: false } : p);
+        const changed = next.find(p => p.id === projectId);
+        if (changed) saveProjectInDB(changed);
+        return next;
+      }
+      return prev;
+    });
     if (expanded && expanded.projectId === projectId && expanded.stageId === stageId) setExpanded(null);
     else setExpanded({ projectId, stageId });
   };
@@ -1122,7 +1566,7 @@ function Tracker({ session, onSignOut }) {
           stages: p.stages.map(s => {
             if (s.id !== stageId) return s;
             const nx = order[(order.indexOf(s.status) + 1) % 3];
-            const items = s.items.map(it => ({ ...it, done: nx === 'done' ? true : (nx === 'todo' ? false : it.done) }));
+            const items = s.items.map(it => ({ ...it, done: nx === 'done', status: nx === 'done' ? 'confirmed' : (nx === 'todo' ? 'todo' : itemStatus(it)) }));
             return { ...s, status: nx, items };
           }),
         };
@@ -1167,12 +1611,19 @@ function Tracker({ session, onSignOut }) {
 
   const onCreate = async (data) => {
     const stages = DEFAULT_STAGES_TPL.map(tpl => makeStage(tpl));
+    const startISO = data.start || toISODate(TODAY);
+    const dueISO = data.due || '';
     const projectData = {
       archived: false,
       costsOpen: false,
-      start: new Date(TODAY).toISOString().slice(0, 10),
+      start: startISO,
       fixedMonthly: 180000,
       outsources: [],
+      payments: [
+        { id: uid('pay'), label: '頭期款', percentage: 50, dueDate: startISO },
+        { id: uid('pay'), label: '尾款',   percentage: 50, dueDate: dueISO },
+      ],
+      outsourcePayDate: dueISO ? addDays(dueISO, 5) : '',
       ...data,
       stages,
     };
@@ -1233,6 +1684,7 @@ function Tracker({ session, onSignOut }) {
             STOP MOTION STUDIO · EST. 2018
           </div>
           <h1>Jordan Tseng<span className="sub">／ 進度追蹤器</span></h1>
+          <div className="daily-quote">「{getDailyQuote().text}」— {getDailyQuote().author}</div>
         </div>
         <div className="topbar-right">
           <button className="btn btn-ghost btn-icon" onClick={() => window.postMessage({ type: '__activate_edit_mode' }, '*')} title="顯示設定面板（檢視模式、字體、密度…）">
