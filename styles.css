@@ -778,6 +778,13 @@ input, textarea { font-family: inherit; }
   color: var(--text-3);
   letter-spacing: -0.005em;
 }
+.field-hint {
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.45;
+  margin-top: 2px;
+  font-style: italic;
+}
 .input, .textarea, .date-input {
   width: 100%;
   border: 1px solid var(--border);

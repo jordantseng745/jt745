@@ -1260,6 +1260,75 @@ function EditProjectModal({ project, onClose, onSave }) {
   );
 }
 
+function CashflowSettingsModal({ settings, onClose, onSave }) {
+  const [form, setForm] = useState({
+    startDate: settings.startDate || toISODate(TODAY),
+    bankBalance: settings.bankBalance ?? '',
+    monthlyFixedExpense: settings.monthlyFixedExpense ?? 180000,
+    deductionDay: settings.deductionDay ?? 31,
+  });
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const submit = (e) => {
+    e.preventDefault();
+    const day = Math.max(1, Math.min(31, Number(form.deductionDay) || 31));
+    onSave({
+      startDate: form.startDate || toISODate(TODAY),
+      bankBalance: Number(form.bankBalance) || 0,
+      monthlyFixedExpense: Number(form.monthlyFixedExpense) || 0,
+      deductionDay: day,
+    });
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modal">
+        <h2>💵 現金流設定</h2>
+        <div className="modal-sub">這些數字會用來畫首頁的現金流量表</div>
+        <form className="modal-form" onSubmit={submit}>
+          <div className="field">
+            <label className="field-label">起算日（圖表從這天開始）</label>
+            <input className="date-input" type="date"
+              value={form.startDate}
+              onChange={e => setForm({ ...form, startDate: e.target.value })} />
+          </div>
+          <div className="field">
+            <label className="field-label">起算日當天的銀行存款餘額 (NT$)</label>
+            <input className="input" type="number" placeholder="例：500000"
+              value={form.bankBalance}
+              onChange={e => setForm({ ...form, bankBalance: e.target.value })} />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12 }}>
+            <div className="field">
+              <label className="field-label">每月固定支出 (NT$)</label>
+              <input className="input" type="number" placeholder="例：180000"
+                value={form.monthlyFixedExpense}
+                onChange={e => setForm({ ...form, monthlyFixedExpense: e.target.value })} />
+              <div className="field-hint">薪資、租金等每月固定要付出的金額</div>
+            </div>
+            <div className="field">
+              <label className="field-label">每月扣款日</label>
+              <input className="input" type="number" min="1" max="31"
+                value={form.deductionDay}
+                onChange={e => setForm({ ...form, deductionDay: e.target.value })} />
+              <div className="field-hint">1–31 號（若該月無此日，自動取月底）</div>
+            </div>
+          </div>
+          <div className="modal-actions">
+            <button type="button" className="btn btn-ghost" onClick={onClose}>取消 (Esc)</button>
+            <button type="submit" className="btn btn-primary">儲存</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function NewProjectModal({ onClose, onCreate }) {
   const [form, setForm] = useState({ title: '', client: '', budget: '', due: '' });
   const titleRef = useRef(null);
@@ -1419,6 +1488,8 @@ function Tracker({ session, onSignOut }) {
   const [showHint, setShowHint] = useState(true);
   const [dragId, setDragId] = useState(null);
   const [dragOverId, setDragOverId] = useState(null);
+  const [globalSettings, setGlobalSettings] = useState(null); // null while loading
+  const [showCashSettings, setShowCashSettings] = useState(false);
 
   // Load projects from Supabase on mount
   useEffect(() => {
@@ -1428,6 +1499,22 @@ function Tracker({ session, onSignOut }) {
       .catch(err => { if (!cancelled) { setLoadError(err.message); setDataReady(true); } });
     return () => { cancelled = true; };
   }, []);
+
+  // Load global cash-flow settings on mount
+  useEffect(() => {
+    let cancelled = false;
+    loadUserSettings()
+      .then(s => { if (!cancelled) setGlobalSettings(s || {}); })
+      .catch(() => { if (!cancelled) setGlobalSettings({}); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const onSaveCashSettings = (patch) => {
+    const next = { ...(globalSettings || {}), ...patch };
+    setGlobalSettings(next);
+    saveUserSettings(next);
+    setShowCashSettings(false);
+  };
 
   // Celebration: detect completion transitions between renders.
   // prevProjectsRef stays null until the first ready render, so we don't
@@ -1687,6 +1774,9 @@ function Tracker({ session, onSignOut }) {
           <div className="daily-quote">「{getDailyQuote().text}」— {getDailyQuote().author}</div>
         </div>
         <div className="topbar-right">
+          <button className="btn btn-ghost btn-icon" onClick={() => setShowCashSettings(true)} title="現金流設定（銀行餘額、固定支出）">
+            💵
+          </button>
           <button className="btn btn-ghost btn-icon" onClick={() => window.postMessage({ type: '__activate_edit_mode' }, '*')} title="顯示設定面板（檢視模式、字體、密度…）">
             ⚙
           </button>
@@ -1795,6 +1885,14 @@ function Tracker({ session, onSignOut }) {
       </div>
 
       {showNew && <NewProjectModal onClose={() => setShowNew(false)} onCreate={onCreate} />}
+
+      {showCashSettings && (
+        <CashflowSettingsModal
+          settings={globalSettings || {}}
+          onClose={() => setShowCashSettings(false)}
+          onSave={onSaveCashSettings}
+        />
+      )}
 
       {expanded && t.panelStyle !== 'inline' && expandedProj && (
         <>
