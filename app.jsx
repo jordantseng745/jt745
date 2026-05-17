@@ -862,6 +862,25 @@ function buildCashflowSeries(projects, settings, horizonMonths = 12) {
     }
   }
 
+  // Extra confirmed expenses (equipment / other planned outflows).
+  // Unconfirmed entries are NOT included — toggling 確認付款 brings them in/out instantly.
+  const extras = settings.extraExpenses || [];
+  for (const ex of extras) {
+    if (!ex.confirmed) continue;
+    if (!ex.plannedDate) continue;
+    const d = new Date(ex.plannedDate);
+    if (isNaN(d) || d < start || d > end) continue;
+    const amt = Number(ex.amount) || 0;
+    if (amt <= 0) continue;
+    const typeLabel = ex.type === 'equipment' ? '設備' : '其他';
+    events.push({
+      date: d,
+      amount: -amt,
+      label: `${ex.name || '未命名'} · ${typeLabel}`,
+      kind: 'extra',
+    });
+  }
+
   events.sort((a, b) => a.date - b.date);
 
   // Cumulative points; first point is the starting balance
@@ -1581,6 +1600,7 @@ function CashflowChart({ series }) {
       if (kind === 'income') return '#10b981';
       if (kind === 'fixed') return '#ef4444';
       if (kind === 'outsource') return '#f59e0b';
+      if (kind === 'extra') return '#8b5cf6';
       return '#1a1917'; // start/end
     };
 
@@ -1672,6 +1692,7 @@ function CashflowLegend() {
       <span className="cf-legend-item"><span className="cf-dot" style={{ background: '#10b981' }}></span>收入</span>
       <span className="cf-legend-item"><span className="cf-dot" style={{ background: '#ef4444' }}></span>每月固定支出</span>
       <span className="cf-legend-item"><span className="cf-dot" style={{ background: '#f59e0b' }}></span>外包付款</span>
+      <span className="cf-legend-item"><span className="cf-dot" style={{ background: '#8b5cf6' }}></span>額外支出（已確認）</span>
     </div>
   );
 }
@@ -1759,8 +1780,103 @@ function Sidebar({ currentPage, onChange, counts }) {
   );
 }
 
+// ---------- Extra expense list (equipment / planned outflow simulator) ----------
+function ExtraExpenseList({ expenses, onChange }) {
+  const list = expenses || [];
+
+  const addEntry = () => {
+    const item = {
+      id: uid('ex'),
+      name: '',
+      amount: 0,
+      type: 'equipment',
+      plannedDate: toISODate(TODAY),
+      confirmed: false,
+    };
+    onChange([...list, item]);
+  };
+  const updateEntry = (id, patch) => {
+    onChange(list.map(e => e.id === id ? { ...e, ...patch } : e));
+  };
+  const deleteEntry = (id) => {
+    onChange(list.filter(e => e.id !== id));
+  };
+  const toggleConfirm = (id) => {
+    onChange(list.map(e => e.id === id ? { ...e, confirmed: !e.confirmed } : e));
+  };
+
+  const confirmedTotal = list.filter(e => e.confirmed).reduce((a, e) => a + (Number(e.amount) || 0), 0);
+  const draftTotal     = list.filter(e => !e.confirmed).reduce((a, e) => a + (Number(e.amount) || 0), 0);
+
+  return (
+    <section className="extra-expense-section">
+      <div className="page-section-header">
+        <h3 className="page-section-title">🛒 額外支出試算</h3>
+        <div className="section-stats">
+          {list.length > 0 && (
+            <>
+              <span className="cashflow-stat">已確認 <strong>{fmtNT(confirmedTotal)}</strong></span>
+              <span className="cashflow-stat draft">試算中 <strong>{fmtNT(draftTotal)}</strong></span>
+            </>
+          )}
+          <button className="btn btn-ghost small" onClick={addEntry}>+ 新增一筆</button>
+        </div>
+      </div>
+
+      <div className="section-hint">
+        輸入金額和日期 → 按「確認付款」加入現金流圖 → 再按一次取消（試算狀態）。確認與否完全由你切換，沒有不可逆動作。
+      </div>
+
+      {list.length === 0 ? (
+        <div className="empty-state">
+          還沒有試算項目。例如想買 10 萬的相機，就在這裡加一筆，立刻看現金流的衝擊。
+        </div>
+      ) : (
+        <div className="extra-list">
+          <div className="extra-row head">
+            <div>項目名稱</div>
+            <div>類型</div>
+            <div className="num">金額</div>
+            <div>預計付款日</div>
+            <div className="center">狀態</div>
+            <div></div>
+          </div>
+          {list.map(ex => (
+            <div key={ex.id} className={`extra-row ${ex.confirmed ? 'confirmed' : 'draft'}`}>
+              <input className="input" placeholder="例：Canon R5 相機"
+                value={ex.name}
+                onChange={e => updateEntry(ex.id, { name: e.target.value })} />
+              <select className="input select"
+                value={ex.type}
+                onChange={e => updateEntry(ex.id, { type: e.target.value })}>
+                <option value="equipment">設備</option>
+                <option value="other">其他</option>
+              </select>
+              <input type="number" className="num-input"
+                value={ex.amount}
+                onChange={e => updateEntry(ex.id, { amount: Number(e.target.value) })} />
+              <input type="date" className="date-input compact"
+                value={ex.plannedDate || ''}
+                onChange={e => updateEntry(ex.id, { plannedDate: e.target.value })} />
+              <div className="center">
+                <button
+                  className={`confirm-btn ${ex.confirmed ? 'on' : ''}`}
+                  onClick={() => toggleConfirm(ex.id)}
+                  title={ex.confirmed ? '已加入現金流（按一下取消）' : '加入現金流'}>
+                  {ex.confirmed ? '✓ 已確認' : '確認付款'}
+                </button>
+              </div>
+              <button className="delete-item visible" onClick={() => deleteEntry(ex.id)} title="刪除">×</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 // ---------- Finance page (cash flow + cross-project summary) ----------
-function FinancePage({ projects, settings, onOpenSettings }) {
+function FinancePage({ projects, settings, onOpenSettings, onUpdateExtraExpenses }) {
   const rows = projects.map(p => {
     const c = calcCosts(p);
     return {
@@ -1832,6 +1948,11 @@ function FinancePage({ projects, settings, onOpenSettings }) {
           </div>
         )}
       </section>
+
+      <ExtraExpenseList
+        expenses={settings.extraExpenses || []}
+        onChange={onUpdateExtraExpenses}
+      />
     </>
   );
 }
@@ -1895,6 +2016,12 @@ function Tracker({ session, onSignOut }) {
     setGlobalSettings(next);
     saveUserSettings(next);
     setShowCashSettings(false);
+  };
+
+  const onUpdateExtraExpenses = (nextList) => {
+    const next = { ...(globalSettings || {}), extraExpenses: nextList };
+    setGlobalSettings(next);
+    saveUserSettings(next);
   };
 
   // Celebration: detect completion transitions between renders.
@@ -2273,6 +2400,7 @@ function Tracker({ session, onSignOut }) {
               projects={activeProjects}
               settings={globalSettings || {}}
               onOpenSettings={() => setShowCashSettings(true)}
+              onUpdateExtraExpenses={onUpdateExtraExpenses}
             />
           )}
         </main>

@@ -236,6 +236,114 @@ input, textarea { font-family: inherit; }
   margin-left: 4px;
 }
 
+/* ---------- Extra expense simulator ---------- */
+.extra-expense-section { margin-top: 8px; }
+.page-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 28px 0 8px;
+  flex-wrap: wrap;
+}
+.page-section-header .page-section-title { margin: 0; }
+.section-stats {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.cashflow-stat.draft strong { color: var(--text-3); font-style: italic; }
+.section-hint {
+  font-size: 11.5px;
+  color: var(--text-3);
+  line-height: 1.6;
+  margin-bottom: 12px;
+  font-style: italic;
+}
+.extra-list {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+.extra-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) 110px 130px 160px 110px 24px;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.extra-row:last-child { border-bottom: none; }
+.extra-row.head {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  background: var(--bg-sunken);
+  padding: 8px 14px;
+}
+.extra-row.draft {
+  background: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 8px,
+    rgba(0,0,0,0.012) 8px,
+    rgba(0,0,0,0.012) 12px
+  );
+}
+.extra-row.draft .input,
+.extra-row.draft .num-input,
+.extra-row.draft .date-input {
+  color: var(--text-2);
+}
+.extra-row .input,
+.extra-row .num-input,
+.extra-row .date-input {
+  padding: 6px 10px;
+  font-size: 12.5px;
+}
+.extra-row .input.select {
+  padding-right: 24px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-3) 50%),
+                    linear-gradient(135deg, var(--text-3) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  appearance: none;
+}
+.extra-row .num-input { width: 100%; text-align: right; }
+.extra-row .center { display: grid; place-items: center; }
+.confirm-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text-2);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.12s ease;
+  white-space: nowrap;
+}
+.confirm-btn:hover { background: var(--bg-sunken); color: var(--text); }
+.confirm-btn.on {
+  background: #10b981;
+  border-color: #10b981;
+  color: #fff;
+  box-shadow: var(--shadow-sm);
+}
+.confirm-btn.on:hover { background: #059669; }
+
 .topbar {
   display: flex;
   align-items: flex-end;
@@ -969,6 +1077,19 @@ input, textarea { font-family: inherit; }
   flex-shrink: 0;
   cursor: pointer;
   transition: all 0.15s ease;
+  position: relative;
+}
+.check-box.checked {
+  background: #10b981;
+  border-color: #10b981;
+}
+.check-box.checked::after {
+  content: '';
+  width: 10px;
+  height: 6px;
+  border-left: 2px solid #fff;
+  border-bottom: 2px solid #fff;
+  transform: rotate(-45deg) translate(1px, -1px);
 }
 /* ---------- Item progress bars ---------- */
 .item-bars {
