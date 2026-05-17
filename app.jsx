@@ -41,6 +41,20 @@ const toISODate = (d) => {
   const day = String(dt.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 };
+const fmtChineseDate = (d) => {
+  if (!d) return '';
+  const dt = (d instanceof Date) ? d : new Date(d);
+  if (isNaN(dt)) return '';
+  return `${dt.getFullYear()} 年 ${dt.getMonth() + 1} 月 ${dt.getDate()} 日`;
+};
+// Default categories for extra-expense simulator. Users can add their own.
+const DEFAULT_EXPENSE_CATEGORIES = ['設備', '軟體授權', '投資', '員工福利', '教育訓練', '行銷宣傳', '場租', '物料耗材', '差旅', '維修保養', '雜支', '其他'];
+// Map legacy values ('equipment' / 'other') to the new label-as-value system.
+const normalizeExpenseType = (t) => {
+  if (t === 'equipment') return '設備';
+  if (t === 'other') return '其他';
+  return t || '設備';
+};
 const addDays = (d, n) => {
   if (!d) return '';
   const dt = (d instanceof Date) ? new Date(d) : new Date(d);
@@ -862,7 +876,7 @@ function buildCashflowSeries(projects, settings, horizonMonths = 12) {
     }
   }
 
-  // Extra confirmed expenses (equipment / other planned outflows).
+  // Extra confirmed expenses (planned outflows).
   // Unconfirmed entries are NOT included — toggling 確認付款 brings them in/out instantly.
   const extras = settings.extraExpenses || [];
   for (const ex of extras) {
@@ -872,7 +886,7 @@ function buildCashflowSeries(projects, settings, horizonMonths = 12) {
     if (isNaN(d) || d < start || d > end) continue;
     const amt = Number(ex.amount) || 0;
     if (amt <= 0) continue;
-    const typeLabel = ex.type === 'equipment' ? '設備' : '其他';
+    const typeLabel = normalizeExpenseType(ex.type);
     events.push({
       date: d,
       amount: -amt,
@@ -1697,13 +1711,8 @@ function CashflowLegend() {
   );
 }
 
-function CashflowPanel({ projects, settings, onOpenSettings, defaultOpen = false }) {
+function CashflowPanel({ series, hasSettings, onOpenSettings, defaultOpen = false }) {
   const [open, setOpen] = useState(defaultOpen);
-  const hasSettings = settings && (settings.bankBalance !== undefined && settings.bankBalance !== null && settings.bankBalance !== '');
-  const series = useMemo(
-    () => hasSettings ? buildCashflowSeries(projects, settings, 12) : null,
-    [projects, settings, hasSettings]
-  );
 
   return (
     <div className={`cashflow-panel ${open ? 'open' : 'closed'}`}>
@@ -1711,7 +1720,7 @@ function CashflowPanel({ projects, settings, onOpenSettings, defaultOpen = false
         <button className="cashflow-toggle" onClick={() => setOpen(o => !o)} title={open ? '收起' : '展開'}>
           <span className="cashflow-chevron">{open ? '▾' : '▸'}</span>
           <span className="cashflow-title">📈 現金流量表</span>
-          <span className="cashflow-sub">未來 12 個月 · 月別收支</span>
+          <span className="cashflow-sub">未來 12 個月 · 銀行餘額</span>
         </button>
         <div className="cashflow-actions">
           {hasSettings && series && (
@@ -1780,16 +1789,18 @@ function Sidebar({ currentPage, onChange, counts }) {
   );
 }
 
-// ---------- Extra expense list (equipment / planned outflow simulator) ----------
-function ExtraExpenseList({ expenses, onChange }) {
+// ---------- Extra expense list (planned outflow simulator) ----------
+function ExtraExpenseList({ series, expenses, customCategories, onChange, onUpdateCustomCategories }) {
   const list = expenses || [];
+  const customs = customCategories || [];
+  const allCategories = [...DEFAULT_EXPENSE_CATEGORIES, ...customs];
 
   const addEntry = () => {
     const item = {
       id: uid('ex'),
       name: '',
       amount: 0,
-      type: 'equipment',
+      type: '設備',
       plannedDate: toISODate(TODAY),
       confirmed: false,
     };
@@ -1805,8 +1816,46 @@ function ExtraExpenseList({ expenses, onChange }) {
     onChange(list.map(e => e.id === id ? { ...e, confirmed: !e.confirmed } : e));
   };
 
+  const addCustomCategory = () => {
+    const raw = window.prompt('新增類別名稱（之後在所有下拉選單都會出現）：');
+    if (raw == null) return;
+    const name = raw.trim();
+    if (!name) return;
+    if (allCategories.includes(name)) {
+      alert(`類別「${name}」已經存在。`);
+      return;
+    }
+    onUpdateCustomCategories([...customs, name]);
+  };
+
   const confirmedTotal = list.filter(e => e.confirmed).reduce((a, e) => a + (Number(e.amount) || 0), 0);
   const draftTotal     = list.filter(e => !e.confirmed).reduce((a, e) => a + (Number(e.amount) || 0), 0);
+
+  // Runway banner: when does balance hit 0?
+  let runwayBanner;
+  if (!series) {
+    runwayBanner = (
+      <div className="runway-banner empty">
+        <span className="runway-icon">💵</span>
+        還沒設定銀行餘額，先到右上角 💵 填入起算日資金，才能算出歸零時間。
+      </div>
+    );
+  } else if (series.goesNegative && series.negativeAt) {
+    runwayBanner = (
+      <div className="runway-banner warn">
+        <span className="runway-icon">⚠</span>
+        <span>金錢歸零時間：<strong>{fmtChineseDate(series.negativeAt.date)}</strong></span>
+        <span className="runway-sub">（包含已確認的試算項目）</span>
+      </div>
+    );
+  } else {
+    runwayBanner = (
+      <div className="runway-banner safe">
+        <span className="runway-icon">✓</span>
+        <span>目前 12 個月內<strong>不會見底</strong>，最低點仍有 <strong>{fmtNT(Math.max(0, series.minBalance))}</strong></span>
+      </div>
+    );
+  }
 
   return (
     <section className="extra-expense-section">
@@ -1819,12 +1868,15 @@ function ExtraExpenseList({ expenses, onChange }) {
               <span className="cashflow-stat draft">試算中 <strong>{fmtNT(draftTotal)}</strong></span>
             </>
           )}
+          <button className="btn btn-ghost small" onClick={addCustomCategory}>+ 自訂類別</button>
           <button className="btn btn-ghost small" onClick={addEntry}>+ 新增一筆</button>
         </div>
       </div>
 
+      {runwayBanner}
+
       <div className="section-hint">
-        輸入金額和日期 → 按「確認付款」加入現金流圖 → 再按一次取消（試算狀態）。確認與否完全由你切換，沒有不可逆動作。
+        輸入金額和日期 → 按「確認付款」加入現金流圖 → 再按一次取消（試算狀態）。歸零時間會即時跟著更新。
       </div>
 
       {list.length === 0 ? (
@@ -1841,34 +1893,44 @@ function ExtraExpenseList({ expenses, onChange }) {
             <div className="center">狀態</div>
             <div></div>
           </div>
-          {list.map(ex => (
-            <div key={ex.id} className={`extra-row ${ex.confirmed ? 'confirmed' : 'draft'}`}>
-              <input className="input" placeholder="例：Canon R5 相機"
-                value={ex.name}
-                onChange={e => updateEntry(ex.id, { name: e.target.value })} />
-              <select className="input select"
-                value={ex.type}
-                onChange={e => updateEntry(ex.id, { type: e.target.value })}>
-                <option value="equipment">設備</option>
-                <option value="other">其他</option>
-              </select>
-              <input type="number" className="num-input"
-                value={ex.amount}
-                onChange={e => updateEntry(ex.id, { amount: Number(e.target.value) })} />
-              <input type="date" className="date-input compact"
-                value={ex.plannedDate || ''}
-                onChange={e => updateEntry(ex.id, { plannedDate: e.target.value })} />
-              <div className="center">
-                <button
-                  className={`confirm-btn ${ex.confirmed ? 'on' : ''}`}
-                  onClick={() => toggleConfirm(ex.id)}
-                  title={ex.confirmed ? '已加入現金流（按一下取消）' : '加入現金流'}>
-                  {ex.confirmed ? '✓ 已確認' : '確認付款'}
-                </button>
+          {list.map(ex => {
+            const currentType = normalizeExpenseType(ex.type);
+            // If the saved type isn't in the available list (e.g. legacy or user deleted a custom), still show it as an option.
+            const showOrphanOption = currentType && !allCategories.includes(currentType);
+            return (
+              <div key={ex.id} className={`extra-row ${ex.confirmed ? 'confirmed' : 'draft'}`}>
+                <input className="input" placeholder="例：Canon R5 相機"
+                  value={ex.name}
+                  onChange={e => updateEntry(ex.id, { name: e.target.value })} />
+                <select className="input select"
+                  value={currentType}
+                  onChange={e => updateEntry(ex.id, { type: e.target.value })}>
+                  {showOrphanOption && <option value={currentType}>{currentType}</option>}
+                  {DEFAULT_EXPENSE_CATEGORIES.map(c => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                  {customs.length > 0 && customs.map(c => (
+                    <option key={c} value={c}>{c}（自訂）</option>
+                  ))}
+                </select>
+                <input type="number" className="num-input"
+                  value={ex.amount}
+                  onChange={e => updateEntry(ex.id, { amount: Number(e.target.value) })} />
+                <input type="date" className="date-input compact"
+                  value={ex.plannedDate || ''}
+                  onChange={e => updateEntry(ex.id, { plannedDate: e.target.value })} />
+                <div className="center">
+                  <button
+                    className={`confirm-btn ${ex.confirmed ? 'on' : ''}`}
+                    onClick={() => toggleConfirm(ex.id)}
+                    title={ex.confirmed ? '已加入現金流（按一下取消）' : '加入現金流'}>
+                    {ex.confirmed ? '✓ 已確認' : '確認付款'}
+                  </button>
+                </div>
+                <button className="delete-item visible" onClick={() => deleteEntry(ex.id)} title="刪除">×</button>
               </div>
-              <button className="delete-item visible" onClick={() => deleteEntry(ex.id)} title="刪除">×</button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </section>
@@ -1876,7 +1938,14 @@ function ExtraExpenseList({ expenses, onChange }) {
 }
 
 // ---------- Finance page (cash flow + cross-project summary) ----------
-function FinancePage({ projects, settings, onOpenSettings, onUpdateExtraExpenses }) {
+function FinancePage({ projects, settings, onOpenSettings, onUpdateExtraExpenses, onUpdateCustomCategories }) {
+  const hasSettings = settings && (settings.bankBalance !== undefined && settings.bankBalance !== null && settings.bankBalance !== '');
+  const series = useMemo(
+    () => hasSettings ? buildCashflowSeries(projects, settings, 12) : null,
+    [projects, settings, hasSettings]
+  );
+  const [summaryOpen, setSummaryOpen] = useState(true);
+
   const rows = projects.map(p => {
     const c = calcCosts(p);
     return {
@@ -1902,56 +1971,69 @@ function FinancePage({ projects, settings, onOpenSettings, onUpdateExtraExpenses
   return (
     <>
       <CashflowPanel
-        projects={projects}
-        settings={settings}
+        series={series}
+        hasSettings={hasSettings}
         onOpenSettings={onOpenSettings}
         defaultOpen={true}
       />
 
       <section className="finance-summary">
-        <h3 className="page-section-title">📊 跨專案財務摘要</h3>
-        {rows.length === 0 ? (
-          <div className="empty-state">目前沒有進行中專案。</div>
-        ) : (
-          <div className="finance-table">
-            <div className="finance-row head">
-              <div>專案 / 客戶</div>
-              <div className="num">合約金額</div>
-              <div className="num">應繳營業稅</div>
-              <div className="num">外包總額</div>
-              <div className="num">分攤成本</div>
-              <div className="num">淨利</div>
-            </div>
-            {rows.map(r => (
-              <div key={r.id} className="finance-row">
-                <div>
-                  <div className="finance-title">{r.title}</div>
-                  <div className="finance-client">{r.client}</div>
-                </div>
-                <div className="num">{fmtNT(r.budget)}</div>
-                <div className="num">{fmtNT(r.netVAT)}</div>
-                <div className="num">{fmtNT(r.outsourceTotal)}</div>
-                <div className="num">{fmtNT(r.fixedCost)}</div>
-                <div className={`num strong ${r.profit < 0 ? 'neg' : ''}`}>
-                  {fmtNT(r.profit)} <span className="pct">{r.pct}%</span>
-                </div>
+        <div className="page-section-header collapsible">
+          <button className="section-collapse-btn" onClick={() => setSummaryOpen(o => !o)} title={summaryOpen ? '收起' : '展開'}>
+            <span className="chevron">{summaryOpen ? '▾' : '▸'}</span>
+            <h3 className="page-section-title">📊 跨專案財務摘要</h3>
+          </button>
+          {!summaryOpen && rows.length > 0 && (
+            <span className="cashflow-stat">合計淨利 <strong className={totals.profit < 0 ? 'neg' : ''}>{fmtNT(totals.profit)}</strong></span>
+          )}
+        </div>
+        {summaryOpen && (
+          rows.length === 0 ? (
+            <div className="empty-state">目前沒有進行中專案。</div>
+          ) : (
+            <div className="finance-table">
+              <div className="finance-row head">
+                <div>專案 / 客戶</div>
+                <div className="num">合約金額</div>
+                <div className="num">應繳營業稅</div>
+                <div className="num">外包總額</div>
+                <div className="num">分攤成本</div>
+                <div className="num">淨利</div>
               </div>
-            ))}
-            <div className="finance-row totals">
-              <div><strong>合計（{rows.length} 個進行中）</strong></div>
-              <div className="num strong">{fmtNT(totals.budget)}</div>
-              <div className="num">{fmtNT(totals.netVAT)}</div>
-              <div className="num">{fmtNT(totals.outsourceTotal)}</div>
-              <div className="num">{fmtNT(totals.fixedCost)}</div>
-              <div className={`num strong ${totals.profit < 0 ? 'neg' : ''}`}>{fmtNT(totals.profit)}</div>
+              {rows.map(r => (
+                <div key={r.id} className="finance-row">
+                  <div>
+                    <div className="finance-title">{r.title}</div>
+                    <div className="finance-client">{r.client}</div>
+                  </div>
+                  <div className="num">{fmtNT(r.budget)}</div>
+                  <div className="num">{fmtNT(r.netVAT)}</div>
+                  <div className="num">{fmtNT(r.outsourceTotal)}</div>
+                  <div className="num">{fmtNT(r.fixedCost)}</div>
+                  <div className={`num strong ${r.profit < 0 ? 'neg' : ''}`}>
+                    {fmtNT(r.profit)} <span className="pct">{r.pct}%</span>
+                  </div>
+                </div>
+              ))}
+              <div className="finance-row totals">
+                <div><strong>合計（{rows.length} 個進行中）</strong></div>
+                <div className="num strong">{fmtNT(totals.budget)}</div>
+                <div className="num">{fmtNT(totals.netVAT)}</div>
+                <div className="num">{fmtNT(totals.outsourceTotal)}</div>
+                <div className="num">{fmtNT(totals.fixedCost)}</div>
+                <div className={`num strong ${totals.profit < 0 ? 'neg' : ''}`}>{fmtNT(totals.profit)}</div>
+              </div>
             </div>
-          </div>
+          )
         )}
       </section>
 
       <ExtraExpenseList
+        series={series}
         expenses={settings.extraExpenses || []}
+        customCategories={settings.customExpenseCategories || []}
         onChange={onUpdateExtraExpenses}
+        onUpdateCustomCategories={onUpdateCustomCategories}
       />
     </>
   );
@@ -2020,6 +2102,12 @@ function Tracker({ session, onSignOut }) {
 
   const onUpdateExtraExpenses = (nextList) => {
     const next = { ...(globalSettings || {}), extraExpenses: nextList };
+    setGlobalSettings(next);
+    saveUserSettings(next);
+  };
+
+  const onUpdateCustomCategories = (nextList) => {
+    const next = { ...(globalSettings || {}), customExpenseCategories: nextList };
     setGlobalSettings(next);
     saveUserSettings(next);
   };
@@ -2401,6 +2489,7 @@ function Tracker({ session, onSignOut }) {
               settings={globalSettings || {}}
               onOpenSettings={() => setShowCashSettings(true)}
               onUpdateExtraExpenses={onUpdateExtraExpenses}
+              onUpdateCustomCategories={onUpdateCustomCategories}
             />
           )}
         </main>
