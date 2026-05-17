@@ -2196,3 +2196,251 @@ input, textarea { font-family: inherit; }
   margin-bottom: 14px;
   line-height: 1.4;
 }
+
+/* =========================================================
+   Mobile / narrow-screen layout (≤820px covers all iPhones
+   and iPad-portrait). Pure CSS — no JS branching.
+   ========================================================= */
+@media (max-width: 820px) {
+
+  /* ---------- App shell ---------- */
+  .app {
+    padding: 18px 14px 60px;
+  }
+
+  /* ---------- Topbar: stack brand + buttons ---------- */
+  .topbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+    padding-bottom: 18px;
+    margin-bottom: 18px;
+  }
+  .topbar h1 { font-size: 21px; }
+  .brand { gap: 8px; }
+  .brand .daily-quote {
+    font-size: 12px;
+    max-width: none;
+    line-height: 1.55;
+  }
+  .topbar-right {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 6px;
+  }
+  .topbar-right .btn-primary {
+    flex: 1;
+    min-width: 130px;
+    justify-content: center;
+  }
+  .topbar-right .btn-icon {
+    flex-shrink: 0;
+  }
+
+  /* ---------- Layout: sidebar becomes a top tab strip ---------- */
+  .app-body {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+  .sidebar {
+    position: static;
+    padding: 4px;
+  }
+  .sidebar-nav {
+    flex-direction: row;
+    gap: 4px;
+  }
+  .sidebar-item {
+    flex: 1;
+    justify-content: center;
+    padding: 10px 10px;
+  }
+
+  /* ---------- Tabs row + meta strip ---------- */
+  .tabs-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .meta-strip {
+    flex-wrap: wrap;
+    row-gap: 4px;
+    column-gap: 8px;
+    font-size: 11.5px;
+  }
+  .meta-strip .sep { display: none; }
+
+  /* ---------- Project cards ---------- */
+  .card .card-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+  .card .drag-handle { display: none; }
+  .card .card-right {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    gap: 12px;
+  }
+  .card-actions-abs {
+    position: static !important;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-bottom: 8px;
+    justify-content: flex-end;
+  }
+  .card-actions-abs .card-action {
+    font-size: 10.5px;
+  }
+  .stage-tag-wrap { display: none; }
+
+  /* Stage bar wraps to multiple lines on narrow screens */
+  .stage-bar { flex-wrap: wrap; }
+
+  /* ---------- Cost panel (per-project finance) ---------- */
+  .cost-grid {
+    grid-template-columns: 1fr;
+  }
+  .cost-summary {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .cost-summary .summary-item {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 130px;
+  }
+
+  /* Outsource / payment rows — stack each cell */
+  .outsource-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 12px;
+  }
+  .outsource-row.head { display: none; }
+  .payment-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 12px;
+  }
+  .payment-row.head { display: none; }
+  .payment-aux { flex-wrap: wrap; }
+
+  /* ---------- Finance table → labelled rows ---------- */
+  .finance-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    padding: 14px;
+  }
+  .finance-row.head { display: none; }
+  .finance-row .finance-name-cell {
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 4px;
+  }
+  .finance-row > div[data-label] {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .finance-row > div[data-label]::before {
+    content: attr(data-label);
+    font-size: 10.5px;
+    color: var(--text-3);
+    font-family: var(--font-mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    font-weight: 500;
+    flex-shrink: 0;
+  }
+  .finance-row .num { text-align: right; }
+
+  /* ---------- Extra-expense rows ---------- */
+  .extra-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 12px;
+  }
+  .extra-row.head { display: none; }
+  .extra-row .num-input { text-align: left; }
+
+  /* ---------- Cashflow panel ---------- */
+  .cashflow-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    padding: 12px 14px;
+  }
+  .cashflow-actions {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .cashflow-canvas-wrap { height: 240px; }
+  .cashflow-legend {
+    gap: 10px;
+    font-size: 10.5px;
+  }
+  .cashflow-body { padding: 12px 14px 16px; }
+
+  /* Runway banner */
+  .runway-banner {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  /* Section headers (collapsible + extra-expense) */
+  .page-section-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .section-stats {
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  /* ---------- Modals: near-fullscreen on mobile ---------- */
+  .modal-backdrop {
+    padding: 12px;
+  }
+  .modal {
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    padding: 20px;
+    max-height: calc(100vh - 24px);
+    overflow-y: auto;
+  }
+
+  /* ---------- iOS-safe input font size (prevent zoom on focus) ---------- */
+  .input,
+  .textarea,
+  .date-input,
+  .num-input,
+  .extra-row .input.select {
+    font-size: 16px;
+  }
+
+  /* Tabs trigger dropdown adjustments */
+  .tabs-wrap .tabs { font-size: 12px; }
+
+  /* Footer note */
+  .footer-note {
+    flex-direction: column;
+    gap: 8px;
+    text-align: center;
+  }
+}
+
+/* Extra-tight phones (≤ 380px) — Galaxy S, smaller iPhones */
+@media (max-width: 380px) {
+  .app { padding: 14px 10px 50px; }
+  .topbar h1 { font-size: 19px; }
+  .topbar-right .btn-primary { min-width: 0; padding: 0 10px; }
+  .cashflow-canvas-wrap { height: 200px; }
+}

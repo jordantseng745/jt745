@@ -2002,26 +2002,26 @@ function FinancePage({ projects, settings, onOpenSettings, onUpdateExtraExpenses
               </div>
               {rows.map(r => (
                 <div key={r.id} className="finance-row">
-                  <div>
+                  <div className="finance-name-cell">
                     <div className="finance-title">{r.title}</div>
                     <div className="finance-client">{r.client}</div>
                   </div>
-                  <div className="num">{fmtNT(r.budget)}</div>
-                  <div className="num">{fmtNT(r.netVAT)}</div>
-                  <div className="num">{fmtNT(r.outsourceTotal)}</div>
-                  <div className="num">{fmtNT(r.fixedCost)}</div>
-                  <div className={`num strong ${r.profit < 0 ? 'neg' : ''}`}>
+                  <div className="num" data-label="合約金額">{fmtNT(r.budget)}</div>
+                  <div className="num" data-label="應繳營業稅">{fmtNT(r.netVAT)}</div>
+                  <div className="num" data-label="外包總額">{fmtNT(r.outsourceTotal)}</div>
+                  <div className="num" data-label="分攤成本">{fmtNT(r.fixedCost)}</div>
+                  <div className={`num strong ${r.profit < 0 ? 'neg' : ''}`} data-label="淨利">
                     {fmtNT(r.profit)} <span className="pct">{r.pct}%</span>
                   </div>
                 </div>
               ))}
               <div className="finance-row totals">
-                <div><strong>合計（{rows.length} 個進行中）</strong></div>
-                <div className="num strong">{fmtNT(totals.budget)}</div>
-                <div className="num">{fmtNT(totals.netVAT)}</div>
-                <div className="num">{fmtNT(totals.outsourceTotal)}</div>
-                <div className="num">{fmtNT(totals.fixedCost)}</div>
-                <div className={`num strong ${totals.profit < 0 ? 'neg' : ''}`}>{fmtNT(totals.profit)}</div>
+                <div className="finance-name-cell"><strong>合計（{rows.length} 個進行中）</strong></div>
+                <div className="num strong" data-label="合約金額">{fmtNT(totals.budget)}</div>
+                <div className="num" data-label="應繳營業稅">{fmtNT(totals.netVAT)}</div>
+                <div className="num" data-label="外包總額">{fmtNT(totals.outsourceTotal)}</div>
+                <div className="num" data-label="分攤成本">{fmtNT(totals.fixedCost)}</div>
+                <div className={`num strong ${totals.profit < 0 ? 'neg' : ''}`} data-label="淨利">{fmtNT(totals.profit)}</div>
               </div>
             </div>
           )
