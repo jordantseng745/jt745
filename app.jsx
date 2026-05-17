@@ -1550,7 +1550,8 @@ function ConfigMissingScreen() {
 }
 
 // ---------- Cash flow chart ----------
-// Two-line chart: monthly income vs monthly expense, sharp diagonals.
+// Bank balance over time: one line, sharp diagonals, color-coded event dots.
+// Line goes UP at income events, DOWN at expense events — naturally shows the cash water-level.
 function CashflowChart({ series }) {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
@@ -1559,82 +1560,88 @@ function CashflowChart({ series }) {
     if (!window.Chart || !canvasRef.current) return;
     const ctx = canvasRef.current.getContext('2d');
 
-    const months = series.months;
-    const labels = months.map(m => m.label);
-    const incomeData = months.map(m => m.income);
-    const expenseData = months.map(m => m.expense);
+    const start = series.start;
+    const dayOf = (d) => Math.round((d - start) / 86400000);
+    const horizonDays = Math.round((series.end - start) / 86400000);
+
+    // Clip displayed balance at 0 (real value kept in meta for tooltip)
+    const data = series.points.map(p => ({
+      x: dayOf(p.date),
+      y: Math.max(0, p.balance),
+      meta: p,
+    }));
+
+    const fmtDayOffset = (offset) => {
+      const d = new Date(start);
+      d.setDate(d.getDate() + offset);
+      return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
+    };
+
+    const dotColor = (kind) => {
+      if (kind === 'income') return '#10b981';
+      if (kind === 'fixed') return '#ef4444';
+      if (kind === 'outsource') return '#f59e0b';
+      return '#1a1917'; // start/end
+    };
 
     if (chartRef.current) chartRef.current.destroy();
 
     chartRef.current = new window.Chart(ctx, {
       type: 'line',
       data: {
-        labels,
-        datasets: [
-          {
-            label: '收入',
-            data: incomeData,
-            borderColor: '#10b981',
-            backgroundColor: 'rgba(16,185,129,0.16)',
-            borderWidth: 2.5,
-            pointRadius: 3,
-            pointHoverRadius: 6,
-            pointBackgroundColor: '#10b981',
-            pointBorderColor: '#ffffff',
-            pointBorderWidth: 1.5,
-            fill: true,
-            tension: 0,
-          },
-          {
-            label: '支出',
-            data: expenseData,
-            borderColor: '#ef4444',
-            backgroundColor: 'rgba(239,68,68,0.14)',
-            borderWidth: 2.5,
-            pointRadius: 3,
-            pointHoverRadius: 6,
-            pointBackgroundColor: '#ef4444',
-            pointBorderColor: '#ffffff',
-            pointBorderWidth: 1.5,
-            fill: true,
-            tension: 0,
-          },
-        ],
+        datasets: [{
+          label: '銀行餘額',
+          data,
+          borderColor: '#1a1917',
+          backgroundColor: 'rgba(16,185,129,0.12)',
+          borderWidth: 2.5,
+          pointRadius: data.map(d => (d.meta.kind === 'start' || d.meta.kind === 'end') ? 0 : 4.5),
+          pointHoverRadius: 7,
+          pointBackgroundColor: data.map(d => dotColor(d.meta.kind)),
+          pointBorderColor: '#ffffff',
+          pointBorderWidth: 1.5,
+          fill: true,
+          tension: 0,
+        }],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
         animation: { duration: 400 },
-        interaction: { mode: 'index', intersect: false },
+        interaction: { mode: 'nearest', intersect: false },
         plugins: {
-          legend: {
-            display: true,
-            position: 'top',
-            align: 'end',
-            labels: { font: { size: 12 }, boxWidth: 12, boxHeight: 12, padding: 14, usePointStyle: true, pointStyle: 'circle' },
-          },
+          legend: { display: false },
           tooltip: {
             callbacks: {
-              title: (items) => {
-                const idx = items[0]?.dataIndex;
-                return idx != null ? months[idx].fullLabel : '';
-              },
-              label: (item) => ` ${item.dataset.label}  ${fmtNT(item.parsed.y)}`,
-              footer: (items) => {
-                if (items.length < 2) return '';
-                const inc = items.find(i => i.dataset.label === '收入')?.parsed.y || 0;
-                const exp = items.find(i => i.dataset.label === '支出')?.parsed.y || 0;
-                const net = inc - exp;
-                const sign = net >= 0 ? '+' : '−';
-                return `淨流  ${sign}${fmtNT(Math.abs(net))}`;
+              title: (items) => items[0] ? fmtDayOffset(items[0].parsed.x) : '',
+              label: (item) => {
+                const meta = item.raw.meta;
+                const lines = [meta.label || ''];
+                if (meta.kind !== 'start' && meta.kind !== 'end') {
+                  const sign = meta.amount >= 0 ? '+' : '−';
+                  lines.push(`${sign}${fmtNT(Math.abs(meta.amount))}`);
+                }
+                const balStr = meta.balance < 0
+                  ? `${fmtNT(meta.balance)} ⚠ 見底`
+                  : fmtNT(meta.balance);
+                lines.push(`餘額 ${balStr}`);
+                return lines;
               },
             },
           },
         },
         scales: {
           x: {
-            ticks: { font: { size: 11 }, color: 'rgba(120,120,120,0.85)' },
-            grid: { display: false },
+            type: 'linear',
+            min: 0,
+            max: horizonDays,
+            ticks: {
+              callback: (v) => fmtDayOffset(v),
+              maxTicksLimit: 8,
+              font: { size: 11 },
+              color: 'rgba(120,120,120,0.85)',
+            },
+            grid: { color: 'rgba(0,0,0,0.04)' },
           },
           y: {
             min: 0,
@@ -1658,8 +1665,19 @@ function CashflowChart({ series }) {
   return <canvas ref={canvasRef} />;
 }
 
-function CashflowPanel({ projects, settings, onOpenSettings }) {
-  const [open, setOpen] = useState(false);
+// Small color-key shown above the chart so user knows what dot colors mean
+function CashflowLegend() {
+  return (
+    <div className="cashflow-legend">
+      <span className="cf-legend-item"><span className="cf-dot" style={{ background: '#10b981' }}></span>收入</span>
+      <span className="cf-legend-item"><span className="cf-dot" style={{ background: '#ef4444' }}></span>每月固定支出</span>
+      <span className="cf-legend-item"><span className="cf-dot" style={{ background: '#f59e0b' }}></span>外包付款</span>
+    </div>
+  );
+}
+
+function CashflowPanel({ projects, settings, onOpenSettings, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
   const hasSettings = settings && (settings.bankBalance !== undefined && settings.bankBalance !== null && settings.bankBalance !== '');
   const series = useMemo(
     () => hasSettings ? buildCashflowSeries(projects, settings, 12) : null,
@@ -1703,13 +1721,118 @@ function CashflowPanel({ projects, settings, onOpenSettings }) {
               還沒設定起始銀行餘額。點右上角 <strong>💵</strong> 或 <button className="link-btn" onClick={onOpenSettings}>這裡</button> 填入起算日的銀行存款，圖表就會出來。
             </div>
           ) : (
-            <div className="cashflow-canvas-wrap">
-              <CashflowChart series={series} />
-            </div>
+            <>
+              <CashflowLegend />
+              <div className="cashflow-canvas-wrap">
+                <CashflowChart series={series} />
+              </div>
+            </>
           )}
         </div>
       )}
     </div>
+  );
+}
+
+// ---------- Sidebar nav ----------
+function Sidebar({ currentPage, onChange, counts }) {
+  const items = [
+    { id: 'projects', icon: '📋', label: '專案', count: counts.projects },
+    { id: 'finance',  icon: '💰', label: '財務', count: null },
+  ];
+  return (
+    <aside className="sidebar">
+      <nav className="sidebar-nav">
+        {items.map(item => (
+          <button
+            key={item.id}
+            className={`sidebar-item ${currentPage === item.id ? 'on' : ''}`}
+            onClick={() => onChange(item.id)}
+          >
+            <span className="sidebar-icon">{item.icon}</span>
+            <span className="sidebar-label">{item.label}</span>
+            {item.count != null && <span className="sidebar-count">{item.count}</span>}
+          </button>
+        ))}
+      </nav>
+    </aside>
+  );
+}
+
+// ---------- Finance page (cash flow + cross-project summary) ----------
+function FinancePage({ projects, settings, onOpenSettings }) {
+  const rows = projects.map(p => {
+    const c = calcCosts(p);
+    return {
+      id: p.id,
+      title: p.title,
+      client: p.client,
+      budget: Number(p.budget) || 0,
+      netVAT: c.netVAT,
+      outsourceTotal: c.outsourceTotal,
+      fixedCost: c.fixedCost,
+      profit: c.profit,
+      pct: p.budget ? Math.round(c.profit / p.budget * 100) : 0,
+    };
+  });
+  const totals = rows.reduce((a, r) => ({
+    budget: a.budget + r.budget,
+    netVAT: a.netVAT + r.netVAT,
+    outsourceTotal: a.outsourceTotal + r.outsourceTotal,
+    fixedCost: a.fixedCost + r.fixedCost,
+    profit: a.profit + r.profit,
+  }), { budget: 0, netVAT: 0, outsourceTotal: 0, fixedCost: 0, profit: 0 });
+
+  return (
+    <>
+      <CashflowPanel
+        projects={projects}
+        settings={settings}
+        onOpenSettings={onOpenSettings}
+        defaultOpen={true}
+      />
+
+      <section className="finance-summary">
+        <h3 className="page-section-title">📊 跨專案財務摘要</h3>
+        {rows.length === 0 ? (
+          <div className="empty-state">目前沒有進行中專案。</div>
+        ) : (
+          <div className="finance-table">
+            <div className="finance-row head">
+              <div>專案 / 客戶</div>
+              <div className="num">合約金額</div>
+              <div className="num">應繳營業稅</div>
+              <div className="num">外包總額</div>
+              <div className="num">分攤成本</div>
+              <div className="num">淨利</div>
+            </div>
+            {rows.map(r => (
+              <div key={r.id} className="finance-row">
+                <div>
+                  <div className="finance-title">{r.title}</div>
+                  <div className="finance-client">{r.client}</div>
+                </div>
+                <div className="num">{fmtNT(r.budget)}</div>
+                <div className="num">{fmtNT(r.netVAT)}</div>
+                <div className="num">{fmtNT(r.outsourceTotal)}</div>
+                <div className="num">{fmtNT(r.fixedCost)}</div>
+                <div className={`num strong ${r.profit < 0 ? 'neg' : ''}`}>
+                  {fmtNT(r.profit)} <span className="pct">{r.pct}%</span>
+                </div>
+              </div>
+            ))}
+            <div className="finance-row totals">
+              <div><strong>合計（{rows.length} 個進行中）</strong></div>
+              <div className="num strong">{fmtNT(totals.budget)}</div>
+              <div className="num">{fmtNT(totals.netVAT)}</div>
+              <div className="num">{fmtNT(totals.outsourceTotal)}</div>
+              <div className="num">{fmtNT(totals.fixedCost)}</div>
+              <div className={`num strong ${totals.profit < 0 ? 'neg' : ''}`}>{fmtNT(totals.profit)}</div>
+            </div>
+          </div>
+        )}
+      </section>
+    </>
   );
 }
 
@@ -1747,6 +1870,7 @@ function Tracker({ session, onSignOut }) {
   const [dragOverId, setDragOverId] = useState(null);
   const [globalSettings, setGlobalSettings] = useState(null); // null while loading
   const [showCashSettings, setShowCashSettings] = useState(false);
+  const [currentPage, setCurrentPage] = useState('projects'); // 'projects' | 'finance'
 
   // Load projects from Supabase on mount
   useEffect(() => {
@@ -2051,92 +2175,108 @@ function Tracker({ session, onSignOut }) {
         </div>
       </header>
 
-      <div className="tabs-row">
-        <div className="tabs-wrap" tabIndex={0}>
-          <button className="tabs-trigger" aria-label="切換分頁">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1.5 4a1 1 0 0 1 1-1H6l1.2 1.5h4.3a1 1 0 0 1 1 1V11a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1V4Z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-            <span className="trigger-label">
-              {tab === 'active' ? '進行中' : tab === 'archived' ? '已歸檔' : '垃圾桶'}
-            </span>
-            <span className="count">{tab === 'active' ? activeProjects.length : tab === 'archived' ? archivedProjects.length : deletedProjects.length}</span>
-          </button>
-          <div className="tabs">
-            <button className={`tab ${tab === 'active' ? 'on' : ''}`} onClick={() => setTab('active')}>
-              進行中 <span className="count">{activeProjects.length}</span>
-            </button>
-            <button className={`tab ${tab === 'archived' ? 'on' : ''}`} onClick={() => setTab('archived')}>
-              已歸檔 <span className="count">{archivedProjects.length}</span>
-            </button>
-            <button className={`tab ${tab === 'trash' ? 'on' : ''}`} onClick={() => setTab('trash')}>
-              垃圾桶 <span className="count">{deletedProjects.length}</span>
-            </button>
-          </div>
-        </div>
-        <div className="meta-strip">
-          <span>合計金額 <strong>{fmtNT(totalBudget)}</strong></span>
-          <span className="sep">·</span>
-          <span>預估淨利 <strong>{fmtNT(totalProfit)}</strong></span>
-          <span className="sep">·</span>
-          <span style={{ color: urgentCount ? 'var(--warn)' : undefined }}>
-            <strong style={{ color: urgentCount ? 'var(--warn)' : undefined }}>{urgentCount}</strong> 個 14 天內到期
-          </span>
-          <span style={{ marginLeft: 12, color: 'var(--text-4)' }}>{fmtDate(TODAY)} · TODAY</span>
-        </div>
-      </div>
+      <div className="app-body">
+        <Sidebar
+          currentPage={currentPage}
+          onChange={setCurrentPage}
+          counts={{ projects: activeProjects.length }}
+        />
 
-      <div className="card-list">
-        {visible.length === 0 && (
-          <div className="empty-state">
-            {tab === 'active' ? '目前沒有進行中專案。按 N 新增一個。'
-              : tab === 'archived' ? '尚無已歸檔專案。完成度 100% 的專案會出現在這裡。'
-              : '垃圾桶是空的。已刪除的專案會出現在這裡，可隨時還原。'}
-          </div>
-        )}
-        {visible.map(p => {
-          const isInline = t.panelStyle === 'inline';
-          const expandedStageHere = (expanded && expanded.projectId === p.id && isInline) ? expanded.stageId : null;
-          return (
-            <ProjectCard
-              key={p.id}
-              project={p}
-              expandedStageId={expandedStageHere}
-              costsOpen={p.costsOpen}
-              onStageClick={(sid) => onStageClick(p.id, sid)}
-              onCycleStage={onCycleStage}
-              onCloseDetail={() => setExpanded(null)}
-              onUpdateStage={onUpdateStage}
-              onDeleteStage={onDeleteStage}
-              onInsertStage={onInsertStage}
-              onUpdateProject={onUpdateProject}
-              onDeleteProject={onDeleteProject}
-              onRestore={onRestoreProject}
-              onPurgeProject={onPurgeProject}
-              onArchive={tab === 'active' ? onArchive : onUnarchive}
-              density={t.density}
-              stageVariant={t.stageVariant}
-              panelStyle={t.panelStyle}
-              isDragging={dragId === p.id}
-              isOver={dragOverId === p.id}
-              dragHandleProps={{
-                draggable: true,
-                onDragStart: onDragStart(p.id),
-                onDragEnd,
-              }}
-              dropTargetProps={{
-                onDragOver: onDragOver(p.id),
-                onDragLeave,
-                onDrop: onDrop(p.id),
-              }}
+        <main className="app-main">
+          {currentPage === 'projects' && (
+            <>
+              <div className="tabs-row">
+                <div className="tabs-wrap" tabIndex={0}>
+                  <button className="tabs-trigger" aria-label="切換分頁">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1.5 4a1 1 0 0 1 1-1H6l1.2 1.5h4.3a1 1 0 0 1 1 1V11a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1V4Z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    <span className="trigger-label">
+                      {tab === 'active' ? '進行中' : tab === 'archived' ? '已歸檔' : '垃圾桶'}
+                    </span>
+                    <span className="count">{tab === 'active' ? activeProjects.length : tab === 'archived' ? archivedProjects.length : deletedProjects.length}</span>
+                  </button>
+                  <div className="tabs">
+                    <button className={`tab ${tab === 'active' ? 'on' : ''}`} onClick={() => setTab('active')}>
+                      進行中 <span className="count">{activeProjects.length}</span>
+                    </button>
+                    <button className={`tab ${tab === 'archived' ? 'on' : ''}`} onClick={() => setTab('archived')}>
+                      已歸檔 <span className="count">{archivedProjects.length}</span>
+                    </button>
+                    <button className={`tab ${tab === 'trash' ? 'on' : ''}`} onClick={() => setTab('trash')}>
+                      垃圾桶 <span className="count">{deletedProjects.length}</span>
+                    </button>
+                  </div>
+                </div>
+                <div className="meta-strip">
+                  <span>合計金額 <strong>{fmtNT(totalBudget)}</strong></span>
+                  <span className="sep">·</span>
+                  <span>預估淨利 <strong>{fmtNT(totalProfit)}</strong></span>
+                  <span className="sep">·</span>
+                  <span style={{ color: urgentCount ? 'var(--warn)' : undefined }}>
+                    <strong style={{ color: urgentCount ? 'var(--warn)' : undefined }}>{urgentCount}</strong> 個 14 天內到期
+                  </span>
+                  <span style={{ marginLeft: 12, color: 'var(--text-4)' }}>{fmtDate(TODAY)} · TODAY</span>
+                </div>
+              </div>
+
+              <div className="card-list">
+                {visible.length === 0 && (
+                  <div className="empty-state">
+                    {tab === 'active' ? '目前沒有進行中專案。按 N 新增一個。'
+                      : tab === 'archived' ? '尚無已歸檔專案。完成度 100% 的專案會出現在這裡。'
+                      : '垃圾桶是空的。已刪除的專案會出現在這裡，可隨時還原。'}
+                  </div>
+                )}
+                {visible.map(p => {
+                  const isInline = t.panelStyle === 'inline';
+                  const expandedStageHere = (expanded && expanded.projectId === p.id && isInline) ? expanded.stageId : null;
+                  return (
+                    <ProjectCard
+                      key={p.id}
+                      project={p}
+                      expandedStageId={expandedStageHere}
+                      costsOpen={p.costsOpen}
+                      onStageClick={(sid) => onStageClick(p.id, sid)}
+                      onCycleStage={onCycleStage}
+                      onCloseDetail={() => setExpanded(null)}
+                      onUpdateStage={onUpdateStage}
+                      onDeleteStage={onDeleteStage}
+                      onInsertStage={onInsertStage}
+                      onUpdateProject={onUpdateProject}
+                      onDeleteProject={onDeleteProject}
+                      onRestore={onRestoreProject}
+                      onPurgeProject={onPurgeProject}
+                      onArchive={tab === 'active' ? onArchive : onUnarchive}
+                      density={t.density}
+                      stageVariant={t.stageVariant}
+                      panelStyle={t.panelStyle}
+                      isDragging={dragId === p.id}
+                      isOver={dragOverId === p.id}
+                      dragHandleProps={{
+                        draggable: true,
+                        onDragStart: onDragStart(p.id),
+                        onDragEnd,
+                      }}
+                      dropTargetProps={{
+                        onDragOver: onDragOver(p.id),
+                        onDragLeave,
+                        onDrop: onDrop(p.id),
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            </>
+          )}
+
+          {currentPage === 'finance' && (
+            <FinancePage
+              projects={activeProjects}
+              settings={globalSettings || {}}
+              onOpenSettings={() => setShowCashSettings(true)}
             />
-          );
-        })}
+          )}
+        </main>
       </div>
-
-      <CashflowPanel
-        projects={activeProjects}
-        settings={globalSettings || {}}
-        onOpenSettings={() => setShowCashSettings(true)}
-      />
 
       <div className="footer-note">
         <div>JORDAN TSENG / PROJECT TRACKER v0.5</div>
