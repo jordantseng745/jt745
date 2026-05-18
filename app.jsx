@@ -86,7 +86,7 @@ const makeStage = (tpl, statusOverride) => ({
   start: '',
   end: '',
   note: '',
-  items: (tpl.items || []).map(t => ({ id: uid('i'), text: t, done: false })),
+  items: (tpl.items || []).map(t => ({ id: uid('i'), text: t, done: false, dueDate: '' })),
 });
 
 const seed = () => {
@@ -565,7 +565,7 @@ function ChecklistEditor({ stage, onUpdate }) {
     if (!draft.trim()) return;
     onUpdate({
       ...stage,
-      items: [...stage.items, { id: uid('i'), text: draft.trim(), done: false, status: 'todo' }]
+      items: [...stage.items, { id: uid('i'), text: draft.trim(), done: false, status: 'todo', dueDate: '' }]
     });
     setDraft('');
     setTimeout(() => inputRef.current?.focus(), 0);
@@ -620,6 +620,13 @@ function ChecklistEditor({ stage, onUpdate }) {
               ) : (
                 <span className="item-bar-text">{it.text}</span>
               )}
+              <input
+                type="date"
+                className={`date-input compact item-bar-date ${it.dueDate ? 'has-date' : 'empty'}`}
+                value={it.dueDate || ''}
+                title={it.dueDate ? `交付日：${it.dueDate}` : '設定交付日（會出現在行事曆）'}
+                onChange={e => onUpdate({ ...stage, items: stage.items.map(x => x.id === it.id ? { ...x, dueDate: e.target.value } : x) })}
+              />
               <ItemStatusDropdown value={st} onChange={(newSt) => setItemStatus(it.id, newSt)} />
             </div>
           );
@@ -741,6 +748,39 @@ function StageDetail({ project, stageId, onClose, onUpdateStage, onDeleteStage, 
 }
 
 // ---------- Info Panel ----------
+// ---------- Money input (千分位 + 點下去 0 自動消失) ----------
+// Used everywhere a NT$ amount is edited so users see "10,000" not "10000".
+function MoneyInput({ value, onChange, className = 'num-input', placeholder, ...rest }) {
+  const [focused, setFocused] = useState(false);
+  const inputRef = useRef(null);
+  const num = Number(value) || 0;
+  const display = focused ? String(num) : num.toLocaleString('en-US');
+
+  return (
+    <input
+      ref={inputRef}
+      type="text"
+      inputMode="numeric"
+      autoComplete="off"
+      className={className}
+      placeholder={placeholder}
+      value={display}
+      onFocus={(e) => {
+        setFocused(true);
+        // Defer so React re-renders with the comma-less value before we select it
+        setTimeout(() => { try { e.target.select(); } catch {} }, 0);
+      }}
+      onBlur={() => setFocused(false)}
+      onChange={(e) => {
+        const stripped = e.target.value.replace(/[^\d-]/g, '');
+        const n = stripped === '' || stripped === '-' ? 0 : Number(stripped);
+        onChange(Number.isFinite(n) ? n : 0);
+      }}
+      {...rest}
+    />
+  );
+}
+
 function InfoPanel({ project, onUpdate }) {
   const update = (patch) => onUpdate({ ...project, ...patch });
   const refs = project.references || [];
@@ -936,6 +976,304 @@ function buildCashflowSeries(projects, settings, horizonMonths = 12) {
   return { points, events, months, startBalance: balance, minBalance, goesNegative, negativeAt, start, end };
 }
 
+// ---------- Calendar event aggregator ----------
+// Walks all non-deleted projects + global settings and emits dated events
+// across the whole production + finance lifecycle.
+function buildCalendarEvents(projects) {
+  const events = [];
+
+  for (const p of projects) {
+    if (p.deleted) continue;
+
+    // Project delivery deadline
+    if (p.due) {
+      events.push({
+        date: p.due,
+        kind: 'delivery',
+        projectId: p.id,
+        projectTitle: p.title,
+        label: '交件',
+        detail: p.client,
+      });
+    }
+
+    // Stages — start / end
+    for (const s of (p.stages || [])) {
+      if (s.start) events.push({
+        date: s.start,
+        kind: 'stage-start',
+        projectId: p.id,
+        projectTitle: p.title,
+        label: `${s.emoji || ''} ${s.label} 開始`.trim(),
+        stageId: s.id,
+      });
+      if (s.end) events.push({
+        date: s.end,
+        kind: 'stage-end',
+        projectId: p.id,
+        projectTitle: p.title,
+        label: `${s.emoji || ''} ${s.label} 結束`.trim(),
+        stageId: s.id,
+      });
+      // Item due dates
+      for (const it of (s.items || [])) {
+        if (it.dueDate) {
+          events.push({
+            date: it.dueDate,
+            kind: 'item-due',
+            projectId: p.id,
+            projectTitle: p.title,
+            label: it.text,
+            stageId: s.id,
+            itemId: it.id,
+            stageLabel: s.label,
+          });
+        }
+      }
+    }
+
+    // Payments (incoming money)
+    const payments = getPayments(p);
+    const budget = Number(p.budget) || 0;
+    for (const pay of payments) {
+      if (!pay.dueDate) continue;
+      events.push({
+        date: pay.dueDate,
+        kind: 'payment-in',
+        projectId: p.id,
+        projectTitle: p.title,
+        label: pay.label,
+        amount: budget * (Number(pay.percentage) || 0) / 100,
+        paymentId: pay.id,
+      });
+    }
+
+    // Outsource payment (outgoing money)
+    const outDate = getOutsourcePayDate(p);
+    const outTotal = (p.outsources || []).reduce((a, o) => a + (Number(o.amount) || 0), 0);
+    if (outDate && outTotal > 0) {
+      events.push({
+        date: outDate,
+        kind: 'payment-out',
+        projectId: p.id,
+        projectTitle: p.title,
+        label: '外包付款',
+        amount: outTotal,
+      });
+    }
+  }
+
+  // Sort by date ascending
+  events.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  return events;
+}
+
+// Apply a drag/drop or resize on a calendar event back into the project data.
+// Returns the patch to merge into the project, or null if no change needed.
+function patchForCalendarEvent(project, eventInfo, newDate) {
+  const { kind, stageId, itemId, paymentId } = eventInfo;
+  if (!newDate) return null;
+  switch (kind) {
+    case 'delivery':
+      return { due: newDate };
+    case 'stage-start':
+    case 'stage-end': {
+      const field = kind === 'stage-start' ? 'start' : 'end';
+      return {
+        stages: project.stages.map(s => s.id === stageId ? { ...s, [field]: newDate } : s),
+      };
+    }
+    case 'item-due':
+      return {
+        stages: project.stages.map(s => {
+          if (s.id !== stageId) return s;
+          return { ...s, items: s.items.map(it => it.id === itemId ? { ...it, dueDate: newDate } : it) };
+        }),
+      };
+    case 'payment-in':
+      return {
+        payments: getPayments(project).map(p => p.id === paymentId ? { ...p, dueDate: newDate } : p),
+      };
+    case 'payment-out':
+      return { outsourcePayDate: newDate };
+    default:
+      return null;
+  }
+}
+
+// Apply a stage-bar resize (shift start, end, or both)
+function patchForStageBarChange(project, stageId, { start, end }) {
+  return {
+    stages: project.stages.map(s => {
+      if (s.id !== stageId) return s;
+      const next = { ...s };
+      if (start !== undefined) next.start = start;
+      if (end !== undefined) next.end = end;
+      return next;
+    }),
+  };
+}
+
+// ---------- Export-to-Claude snapshot ----------
+// Builds a Chinese-labelled JSON dump of EVERYTHING Claude needs to discuss
+// finance / projects / cash flow with the user, without them re-typing state.
+function buildExportData(allProjects, settings) {
+  const today = toISODate(TODAY);
+  const active   = allProjects.filter(p => !p.archived && !p.deleted);
+  const archived = allProjects.filter(p => p.archived && !p.deleted);
+
+  const hasSettings = settings && settings.bankBalance !== undefined && settings.bankBalance !== null && settings.bankBalance !== '';
+  const series = hasSettings ? buildCashflowSeries(allProjects.filter(p => !p.deleted), settings, 12) : null;
+
+  const stageStatusZH = { todo: '未開始', active: '進行中', done: '已完成' };
+  const itemStatusZH = { todo: '未開始', active: '進行中', blocked: '卡關', done: '完成', confirmed: '已確認' };
+
+  const projectToExport = (p) => {
+    const c = calcCosts(p);
+    const payments = getPayments(p);
+    const totalItems = p.stages.reduce((a, s) => a + s.items.length, 0);
+    const doneItems  = p.stages.reduce((a, s) => a + s.items.filter(it => {
+      const st = itemStatus(it);
+      return st === 'done' || st === 'confirmed';
+    }).length, 0);
+    const pct = totalItems ? Math.round((doneItems / totalItems) * 100) : 0;
+    const currentStage = p.stages.find(s => s.status === 'active')
+      || [...p.stages].reverse().find(s => s.status === 'done')
+      || p.stages[0];
+    const daysToDue = p.due ? daysBetween(TODAY, new Date(p.due)) : null;
+
+    return {
+      "專案名稱": p.title,
+      "客戶": p.client,
+      "起始日期": p.start || null,
+      "交件日期": p.due || null,
+      "距離交件天數": daysToDue,
+      "案件類型": p.overseas ? '國外案' : '國內案',
+      "合約金額_含稅": Number(p.budget) || 0,
+      "未稅金額": c.preTax,
+      "應繳營業稅": c.netVAT,
+      "外包總額": c.outsourceTotal,
+      "其中公司外包": c.companyOutsource,
+      "其中個人外包": c.personalOutsource,
+      "可抵扣進項稅": c.creditableInputTax,
+      "分攤成本": Math.round(c.fixedCost),
+      "每月固定支出_專案內設定": p.fixedMonthly || 0,
+      "預估淨利": Math.round(c.profit),
+      "淨利率": (p.budget ? Math.round(c.profit / p.budget * 100) : 0) + '%',
+      "進度": pct + '%',
+      "現階段": currentStage ? currentStage.label : null,
+      "現階段狀態": currentStage ? stageStatusZH[currentStage.status] || currentStage.status : null,
+      "收款排程": payments.map(pay => ({
+        "款項": pay.label,
+        "比例": (Number(pay.percentage) || 0) + '%',
+        "預計收款日": pay.dueDate || null,
+        "金額": Math.round((Number(p.budget) || 0) * (Number(pay.percentage) || 0) / 100),
+      })),
+      "外包付款日": getOutsourcePayDate(p) || null,
+      "外包明細": (p.outsources || []).map(o => ({
+        "項目": o.name || '(未命名)',
+        "類型": o.type === 'company' ? '公司' : '個人',
+        "金額": Number(o.amount) || 0,
+        "可抵稅": !!o.taxable,
+      })),
+      "階段細節": p.stages.map(s => ({
+        "階段": s.label,
+        "狀態": stageStatusZH[s.status] || s.status,
+        "起": s.start || null,
+        "迄": s.end || null,
+        "備註": s.note || null,
+        "細項": (s.items || []).map(it => ({
+          "內容": it.text,
+          "狀態": itemStatusZH[itemStatus(it)] || itemStatus(it),
+        })),
+      })),
+      "相關連結": p.references || [],
+    };
+  };
+
+  const cashflowSummary = !series ? {
+    "狀態": "尚未設定銀行餘額，無法估算",
+  } : {
+    "起算日": settings.startDate || today,
+    "起算日銀行餘額": series.startBalance,
+    "每月固定支出": settings.monthlyFixedExpense || 0,
+    "每月扣款日": settings.deductionDay || 31,
+    "未來12個月最低點_含已確認試算": Math.max(0, series.minBalance),
+    "見底日": series.goesNegative && series.negativeAt ? toISODate(series.negativeAt.date) : null,
+    "目前狀態": series.goesNegative ? '⚠ 12個月內會見底' : '✓ 12個月內不會見底',
+    "12個月內所有事件": series.points
+      .filter(pt => pt.kind !== 'start' && pt.kind !== 'end')
+      .map(pt => ({
+        "日期": toISODate(pt.date),
+        "事件": pt.label,
+        "類型": pt.kind === 'income' ? '收入'
+              : pt.kind === 'fixed' ? '每月固定支出'
+              : pt.kind === 'outsource' ? '外包付款'
+              : pt.kind === 'extra' ? '額外支出'
+              : pt.kind,
+        "進出帳": pt.amount,
+        "事件後餘額": pt.balance,
+      })),
+  };
+
+  const extras = settings.extraExpenses || [];
+  const extrasConfirmed = extras.filter(e => e.confirmed);
+  const extrasDraft     = extras.filter(e => !e.confirmed);
+  const extraExpenseSection = {
+    "已確認_有進現金流": extrasConfirmed.map(e => ({
+      "名稱": e.name || '(未命名)',
+      "類型": normalizeExpenseType(e.type),
+      "金額": Number(e.amount) || 0,
+      "預計付款日": e.plannedDate || null,
+    })),
+    "試算中_未進現金流": extrasDraft.map(e => ({
+      "名稱": e.name || '(未命名)',
+      "類型": normalizeExpenseType(e.type),
+      "金額": Number(e.amount) || 0,
+      "預計付款日": e.plannedDate || null,
+    })),
+    "已確認總額": extrasConfirmed.reduce((a, e) => a + (Number(e.amount) || 0), 0),
+    "試算中總額": extrasDraft.reduce((a, e) => a + (Number(e.amount) || 0), 0),
+  };
+
+  const activeBudgetTotal = active.reduce((a, p) => a + (Number(p.budget) || 0), 0);
+  const activeProfitTotal = active.reduce((a, p) => a + calcCosts(p).profit, 0);
+
+  return {
+    "_說明": "這份檔案是 jt745 進度追蹤器在某時刻的快照，給 Claude 用來討論財務 / 專案決策。",
+    "匯出時間": new Date().toISOString(),
+    "今日日期": today,
+    "全域設定": hasSettings ? {
+      "起算日": settings.startDate,
+      "銀行存款餘額": settings.bankBalance,
+      "每月固定支出": settings.monthlyFixedExpense || 0,
+      "每月扣款日": settings.deductionDay || 31,
+    } : "尚未設定",
+    "進行中專案總覽": {
+      "案件數": active.length,
+      "合約金額合計_含稅": activeBudgetTotal,
+      "預估淨利合計": Math.round(activeProfitTotal),
+    },
+    "現金流量預估_未來12個月": cashflowSummary,
+    "額外支出試算": extraExpenseSection,
+    "進行中專案": active.map(projectToExport),
+    "已歸檔專案": archived.map(projectToExport),
+    "自訂支出類別": settings.customExpenseCategories || [],
+  };
+}
+
+function downloadJSON(data, filename) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function PaymentSchedule({ project, onUpdate }) {
   const payments = getPayments(project);
   const budget = Number(project.budget) || 0;
@@ -1070,9 +1408,9 @@ function CostPanel({ project, onUpdate }) {
           </div>
           <div className="cost-row-line">
             <span>每月固定支出</span>
-            <input type="number" className="num-input"
+            <MoneyInput
               value={project.fixedMonthly || 0}
-              onChange={e => update({ fixedMonthly: Number(e.target.value) })} />
+              onChange={v => update({ fixedMonthly: v })} />
           </div>
           <div className="cost-row-line">
             <span>專案起始</span>
@@ -1166,9 +1504,9 @@ function CostPanel({ project, onUpdate }) {
                 <button className={o.type === 'company' ? 'on' : ''} onClick={() => updateOutsource(o.id, { type: 'company', taxable: true })}>公司</button>
                 <button className={o.type === 'personal' ? 'on' : ''} onClick={() => updateOutsource(o.id, { type: 'personal', taxable: false })}>個人</button>
               </div>
-              <input type="number" className="num-input"
+              <MoneyInput
                 value={o.amount}
-                onChange={e => updateOutsource(o.id, { amount: Number(e.target.value) })} />
+                onChange={v => updateOutsource(o.id, { amount: v })} />
               <div className="center">
                 <div className={`check-box ${o.taxable ? 'checked' : ''} ${o.type === 'personal' ? 'disabled' : ''}`}
                   onClick={() => { if (o.type === 'company') updateOutsource(o.id, { taxable: !o.taxable }); }}
@@ -1185,7 +1523,7 @@ function CostPanel({ project, onUpdate }) {
 }
 
 // ---------- Project Card ----------
-function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycleStage, onCloseDetail, onUpdateStage, onDeleteStage, onInsertStage, onUpdateProject, onDeleteProject, onArchive, onRestore, onPurgeProject, density, stageVariant, dragHandleProps, dropTargetProps, isDragging, isOver, panelStyle }) {
+function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycleStage, onCloseDetail, onUpdateStage, onDeleteStage, onInsertStage, onUpdateProject, onTogglePanel, onDeleteProject, onArchive, onRestore, onPurgeProject, density, stageVariant, dragHandleProps, dropTargetProps, isDragging, isOver, panelStyle }) {
   const due = new Date(project.due);
   const days = daysBetween(TODAY, due);
   const warn = days <= 14 && days >= 0;
@@ -1234,10 +1572,10 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
             <button className="card-action" onClick={() => setShowEditModal(true)} title="編輯專案基本資料">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M10.5 2.5l1 1-7 7H3v-1.5l7-7z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
             </button>
-            <button className={`card-action ${project.infoOpen ? 'on' : ''}`} onClick={() => { onCloseDetail(); onUpdateProject(project.id, { infoOpen: !project.infoOpen, costsOpen: false }); }} title="專案資訊">
+            <button className={`card-action ${project.infoOpen ? 'on' : ''}`} onClick={() => onTogglePanel(project.id, 'info')} title="專案資訊">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.2"/><path d="M7 6v4M7 4v.01" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
             </button>
-            <button className={`card-action ${project.costsOpen ? 'on' : ''}`} onClick={() => { onCloseDetail(); onUpdateProject(project.id, { costsOpen: !project.costsOpen, infoOpen: false }); }} title="財務細節">
+            <button className={`card-action ${project.costsOpen ? 'on' : ''}`} onClick={() => onTogglePanel(project.id, 'costs')} title="財務細節">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v12M3.5 3.5h5a2 2 0 1 1 0 4h-3a2 2 0 1 0 0 4h5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>
             </button>
             <button className="card-action danger" onClick={() => onDeleteProject(project.id)} title="移到垃圾桶（可從垃圾桶分頁復原）">
@@ -1365,7 +1703,7 @@ function EditProjectModal({ project, onClose, onSave }) {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div className="field">
               <label className="field-label">合約金額 (NT$)</label>
-              <input className="input" type="number" value={form.budget} onChange={e => setForm({ ...form, budget: e.target.value })} />
+              <MoneyInput className="input" value={form.budget} onChange={v => setForm({ ...form, budget: v })} />
             </div>
             <div className="field">
               <label className="field-label">起始日期</label>
@@ -1425,16 +1763,16 @@ function CashflowSettingsModal({ settings, onClose, onSave }) {
           </div>
           <div className="field">
             <label className="field-label">起算日當天的銀行存款餘額 (NT$)</label>
-            <input className="input" type="number" placeholder="例：500000"
+            <MoneyInput className="input" placeholder="500,000"
               value={form.bankBalance}
-              onChange={e => setForm({ ...form, bankBalance: e.target.value })} />
+              onChange={v => setForm({ ...form, bankBalance: v })} />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12 }}>
             <div className="field">
               <label className="field-label">每月固定支出 (NT$)</label>
-              <input className="input" type="number" placeholder="例：180000"
+              <MoneyInput className="input" placeholder="180,000"
                 value={form.monthlyFixedExpense}
-                onChange={e => setForm({ ...form, monthlyFixedExpense: e.target.value })} />
+                onChange={v => setForm({ ...form, monthlyFixedExpense: v })} />
               <div className="field-hint">薪資、租金等每月固定要付出的金額</div>
             </div>
             <div className="field">
@@ -1490,7 +1828,7 @@ function NewProjectModal({ onClose, onCreate }) {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div className="field">
               <label className="field-label">金額 (NT$)</label>
-              <input className="input" type="number" value={form.budget} onChange={e => setForm({ ...form, budget: e.target.value })} placeholder="500000" />
+              <MoneyInput className="input" value={form.budget} onChange={v => setForm({ ...form, budget: v })} placeholder="500,000" />
             </div>
             <div className="field">
               <label className="field-label">交件日期</label>
@@ -1627,10 +1965,13 @@ function CashflowChart({ series }) {
           label: '銀行餘額',
           data,
           borderColor: '#1a1917',
-          backgroundColor: 'rgba(16,185,129,0.12)',
+          // Warm yellow fill under the line — gives the chart a visible "filled area"
+          backgroundColor: 'rgba(251, 191, 36, 0.28)',
           borderWidth: 2.5,
-          pointRadius: data.map(d => (d.meta.kind === 'start' || d.meta.kind === 'end') ? 0 : 4.5),
+          // Hide all dots visually; reveal on hover so info is still accessible
+          pointRadius: 0,
           pointHoverRadius: 7,
+          pointHitRadius: 14, // generous click target so hover is easy
           pointBackgroundColor: data.map(d => dotColor(d.meta.kind)),
           pointBorderColor: '#ffffff',
           pointBorderWidth: 1.5,
@@ -1767,8 +2108,9 @@ function CashflowPanel({ series, hasSettings, onOpenSettings, defaultOpen = fals
 // ---------- Sidebar nav ----------
 function Sidebar({ currentPage, onChange, counts }) {
   const items = [
-    { id: 'projects', icon: '📋', label: '專案', count: counts.projects },
-    { id: 'finance',  icon: '💰', label: '財務', count: null },
+    { id: 'projects', label: '專案',   count: counts.projects },
+    { id: 'finance',  label: '財務',   count: null },
+    { id: 'calendar', label: '行事曆', count: null },
   ];
   return (
     <aside className="sidebar">
@@ -1779,7 +2121,6 @@ function Sidebar({ currentPage, onChange, counts }) {
             className={`sidebar-item ${currentPage === item.id ? 'on' : ''}`}
             onClick={() => onChange(item.id)}
           >
-            <span className="sidebar-icon">{item.icon}</span>
             <span className="sidebar-label">{item.label}</span>
             {item.count != null && <span className="sidebar-count">{item.count}</span>}
           </button>
@@ -1859,24 +2200,29 @@ function ExtraExpenseList({ series, expenses, customCategories, onChange, onUpda
 
   return (
     <section className="extra-expense-section">
+      {/* Title row: just the heading + totals (announcement-style) */}
       <div className="page-section-header">
         <h3 className="page-section-title">🛒 額外支出試算</h3>
-        <div className="section-stats">
-          {list.length > 0 && (
-            <>
-              <span className="cashflow-stat">已確認 <strong>{fmtNT(confirmedTotal)}</strong></span>
-              <span className="cashflow-stat draft">試算中 <strong>{fmtNT(draftTotal)}</strong></span>
-            </>
-          )}
-          <button className="btn btn-ghost small" onClick={addCustomCategory}>+ 自訂類別</button>
-          <button className="btn btn-ghost small" onClick={addEntry}>+ 新增一筆</button>
-        </div>
+        {list.length > 0 && (
+          <div className="section-stats">
+            <span className="cashflow-stat">已確認 <strong>{fmtNT(confirmedTotal)}</strong></span>
+            <span className="cashflow-stat draft">試算中 <strong>{fmtNT(draftTotal)}</strong></span>
+          </div>
+        )}
       </div>
 
+      {/* Runway banner: the “announcement” */}
       {runwayBanner}
 
-      <div className="section-hint">
-        輸入金額和日期 → 按「確認付款」加入現金流圖 → 再按一次取消（試算狀態）。歸零時間會即時跟著更新。
+      {/* Action buttons + hint live RIGHT ABOVE the list, so they're easy to find after adding rows */}
+      <div className="extra-actions-row">
+        <div className="section-hint">
+          輸入金額和日期 → 按「確認付款」加入現金流圖 → 再按一次取消（試算狀態）。歸零時間會即時跟著更新。
+        </div>
+        <div className="extra-actions-buttons">
+          <button className="btn btn-ghost small" onClick={addCustomCategory}>+ 自訂類別</button>
+          <button className="btn btn-primary small" onClick={addEntry}>+ 新增一筆</button>
+        </div>
       </div>
 
       {list.length === 0 ? (
@@ -1913,9 +2259,9 @@ function ExtraExpenseList({ series, expenses, customCategories, onChange, onUpda
                     <option key={c} value={c}>{c}（自訂）</option>
                   ))}
                 </select>
-                <input type="number" className="num-input"
+                <MoneyInput
                   value={ex.amount}
-                  onChange={e => updateEntry(ex.id, { amount: Number(e.target.value) })} />
+                  onChange={v => updateEntry(ex.id, { amount: v })} />
                 <input type="date" className="date-input compact"
                   value={ex.plannedDate || ''}
                   onChange={e => updateEntry(ex.id, { plannedDate: e.target.value })} />
@@ -1937,8 +2283,462 @@ function ExtraExpenseList({ series, expenses, customCategories, onChange, onUpda
   );
 }
 
+// ---------- Calendar page (cross-project timeline) ----------
+const CAL_KIND_META = {
+  'delivery':    { color: '#dc2626', emoji: '🚚', name: '交件' },
+  'stage-start': { color: '#3b82f6', emoji: '▶',  name: '階段開始' },
+  'stage-end':   { color: '#10b981', emoji: '✓',  name: '階段結束' },
+  'item-due':    { color: '#8b5cf6', emoji: '📌', name: '細項交付' },
+  'payment-in':  { color: '#16a34a', emoji: '💰', name: '收款' },
+  'payment-out': { color: '#f59e0b', emoji: '💸', name: '外包付款' },
+};
+
+function CalendarPage({ projects, onMoveEvent, onResizeStage }) {
+  const [view, setView] = useState('month'); // 'month' | 'list' | 'gantt'
+  const [fullscreen, setFullscreen] = useState(false);
+  const [cursor, setCursor] = useState(() => {
+    const d = new Date(TODAY);
+    return { year: d.getFullYear(), month: d.getMonth() };
+  });
+
+  const allEvents = useMemo(() => buildCalendarEvents(projects), [projects]);
+
+  const eventsByDate = useMemo(() => {
+    const map = {};
+    for (const e of allEvents) {
+      (map[e.date] = map[e.date] || []).push(e);
+    }
+    return map;
+  }, [allEvents]);
+
+  const goPrevMonth = () => setCursor(c => {
+    const m = c.month - 1;
+    return m < 0 ? { year: c.year - 1, month: 11 } : { year: c.year, month: m };
+  });
+  const goNextMonth = () => setCursor(c => {
+    const m = c.month + 1;
+    return m > 11 ? { year: c.year + 1, month: 0 } : { year: c.year, month: m };
+  });
+  const goToday = () => {
+    const d = new Date(TODAY);
+    setCursor({ year: d.getFullYear(), month: d.getMonth() });
+  };
+
+  // Escape key exits fullscreen
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e) => { if (e.key === 'Escape') setFullscreen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [fullscreen]);
+
+  const showFullscreenBtn = view === 'gantt';
+
+  const content = (
+    <>
+      <div className="calendar-toolbar">
+        <div className="calendar-title">
+          {view === 'month' && (
+            <>
+              <button className="cal-nav-btn" onClick={goPrevMonth} title="上個月">‹</button>
+              <h2 className="cal-month-label">{cursor.year} 年 {cursor.month + 1} 月</h2>
+              <button className="cal-nav-btn" onClick={goNextMonth} title="下個月">›</button>
+              <button className="btn btn-ghost small" onClick={goToday} title="跳到本月">今天</button>
+            </>
+          )}
+          {view !== 'month' && (
+            <h2 className="cal-month-label">{view === 'list' ? '未來事件' : '甘特圖'}</h2>
+          )}
+        </div>
+        <div className="calendar-toolbar-right">
+          {showFullscreenBtn && (
+            <button className="btn btn-ghost small" onClick={() => setFullscreen(f => !f)}
+              title={fullscreen ? '退出全螢幕 (Esc)' : '全螢幕'}>
+              {fullscreen ? '⤓ 退出全螢幕' : '⤢ 全螢幕'}
+            </button>
+          )}
+          <div className="view-toggle">
+            <button className={view === 'month' ? 'on' : ''} onClick={() => setView('month')}>月</button>
+            <button className={view === 'list'  ? 'on' : ''} onClick={() => setView('list')}>列表</button>
+            <button className={view === 'gantt' ? 'on' : ''} onClick={() => setView('gantt')}>甘特</button>
+          </div>
+        </div>
+      </div>
+
+      <div className="calendar-legend">
+        {Object.entries(CAL_KIND_META).map(([k, m]) => (
+          <span key={k} className="cf-legend-item"><span className="cf-dot" style={{ background: m.color }}></span>{m.name}</span>
+        ))}
+        {view === 'month' && <span className="cal-hint">💡 提示：可以把事件拖到別的日期</span>}
+        {view === 'gantt' && <span className="cal-hint">💡 提示：拖動條移動、拖邊緣調長度</span>}
+      </div>
+
+      {view === 'month' && <CalendarMonthView cursor={cursor} eventsByDate={eventsByDate} onMoveEvent={onMoveEvent} />}
+      {view === 'list'  && <CalendarListView allEvents={allEvents} />}
+      {view === 'gantt' && <CalendarGanttView projects={projects} onResizeStage={onResizeStage} />}
+    </>
+  );
+
+  if (fullscreen) {
+    return <div className="calendar-fullscreen">{content}</div>;
+  }
+  return content;
+}
+
+function CalendarMonthView({ cursor, eventsByDate, onMoveEvent }) {
+  const [dragOverDate, setDragOverDate] = useState(null);
+  const { year, month } = cursor;
+  const firstOfMonth = new Date(year, month, 1);
+  const startWeekday = firstOfMonth.getDay(); // 0=Sun
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const daysInPrevMonth = new Date(year, month, 0).getDate();
+  const todayISO = toISODate(TODAY);
+
+  // Build a 6×7 grid of cells (each cell = { date, inMonth })
+  const cells = [];
+  // leading blanks from previous month
+  for (let i = startWeekday - 1; i >= 0; i--) {
+    const d = new Date(year, month - 1, daysInPrevMonth - i);
+    cells.push({ date: toISODate(d), day: d.getDate(), inMonth: false });
+  }
+  // this month
+  for (let d = 1; d <= daysInMonth; d++) {
+    cells.push({ date: toISODate(new Date(year, month, d)), day: d, inMonth: true });
+  }
+  // trailing blanks to fill out 42 cells (6 weeks)
+  let next = 1;
+  while (cells.length < 42) {
+    const d = new Date(year, month + 1, next++);
+    cells.push({ date: toISODate(d), day: d.getDate(), inMonth: false });
+  }
+
+  return (
+    <div className="cal-month">
+      <div className="cal-weekdays">
+        {['日','一','二','三','四','五','六'].map(w => <div key={w}>{w}</div>)}
+      </div>
+      <div className="cal-grid">
+        {cells.map((cell, i) => {
+          const evs = eventsByDate[cell.date] || [];
+          const isToday = cell.date === todayISO;
+          const isDragOver = dragOverDate === cell.date;
+          return (
+            <div
+              key={i}
+              className={`cal-cell ${cell.inMonth ? 'in-month' : 'out-month'} ${isToday ? 'today' : ''} ${isDragOver ? 'drag-over' : ''}`}
+              onDragOver={(e) => { if (onMoveEvent) { e.preventDefault(); setDragOverDate(cell.date); } }}
+              onDragLeave={() => { if (dragOverDate === cell.date) setDragOverDate(null); }}
+              onDrop={(e) => {
+                if (!onMoveEvent) return;
+                e.preventDefault();
+                setDragOverDate(null);
+                try {
+                  const data = JSON.parse(e.dataTransfer.getData('application/json') || '{}');
+                  if (data && data.date !== cell.date) onMoveEvent(data, cell.date);
+                } catch {}
+              }}
+            >
+              <div className="cal-cell-day">{cell.day}</div>
+              <div className="cal-cell-events">
+                {evs.slice(0, 3).map((e, idx) => {
+                  const meta = CAL_KIND_META[e.kind] || {};
+                  return (
+                    <div
+                      key={idx}
+                      className="cal-event-chip"
+                      style={{ borderLeftColor: meta.color }}
+                      title={`${e.projectTitle} · ${e.label}${e.amount ? ` (${fmtNT(e.amount)})` : ''}（拖到別的日期可改動日期）`}
+                      draggable={!!onMoveEvent}
+                      onDragStart={(ev) => {
+                        if (!onMoveEvent) return;
+                        ev.dataTransfer.effectAllowed = 'move';
+                        ev.dataTransfer.setData('application/json', JSON.stringify(e));
+                      }}
+                    >
+                      <span className="cal-event-emoji">{meta.emoji}</span>
+                      <span className="cal-event-label">{e.projectTitle} · {e.label}</span>
+                    </div>
+                  );
+                })}
+                {evs.length > 3 && <div className="cal-event-more">+{evs.length - 3} 項</div>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function CalendarListView({ allEvents }) {
+  const todayISO = toISODate(TODAY);
+  // Only show events from today onwards (past events are less relevant for planning)
+  const futureEvents = allEvents.filter(e => e.date >= todayISO);
+
+  // Group by date
+  const groups = {};
+  for (const e of futureEvents) {
+    (groups[e.date] = groups[e.date] || []).push(e);
+  }
+  const dateKeys = Object.keys(groups).sort();
+
+  if (dateKeys.length === 0) {
+    return <div className="empty-state">沒有未來的事件。到各專案的階段或財務設定日期就會出現在這裡。</div>;
+  }
+
+  return (
+    <div className="cal-list">
+      {dateKeys.map(date => {
+        const d = new Date(date);
+        const weekday = ['週日','週一','週二','週三','週四','週五','週六'][d.getDay()];
+        const isToday = date === todayISO;
+        const daysFromToday = daysBetween(TODAY, d);
+        return (
+          <div key={date} className={`cal-list-day ${isToday ? 'today' : ''}`}>
+            <div className="cal-list-date">
+              <div className="cal-list-date-main">{d.getMonth() + 1} 月 {d.getDate()} 日</div>
+              <div className="cal-list-date-sub">{weekday} · {isToday ? '今天' : daysFromToday === 1 ? '明天' : `${daysFromToday} 天後`}</div>
+            </div>
+            <div className="cal-list-events">
+              {groups[date].map((e, i) => {
+                const meta = CAL_KIND_META[e.kind] || {};
+                return (
+                  <div key={i} className="cal-list-event" style={{ borderLeftColor: meta.color }}>
+                    <span className="cal-event-emoji">{meta.emoji}</span>
+                    <div className="cal-list-event-body">
+                      <div className="cal-list-event-title">
+                        <strong>{e.projectTitle}</strong> · {e.label}
+                        {e.stageLabel && e.kind === 'item-due' && <span className="cal-list-event-stage"> ({e.stageLabel})</span>}
+                      </div>
+                      {e.amount != null && <div className="cal-list-event-amount">{fmtNT(e.amount)}</div>}
+                      {e.detail && <div className="cal-list-event-detail">{e.detail}</div>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------- Gantt view ----------
+// Each project = one row. Each stage with start+end = a draggable bar on that row.
+// Drag the bar to shift both start AND end by the same number of days.
+// Drag the left/right edge handle to change only one side.
+const GANTT_PX_PER_DAY = 30;
+const GANTT_ROW_HEIGHT = 56;
+const GANTT_LABEL_WIDTH = 180;
+const GANTT_STAGE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
+
+function CalendarGanttView({ projects, onResizeStage }) {
+  // Determine the time range we draw — earliest stage/project date to latest, plus buffer
+  const range = useMemo(() => {
+    const dates = [];
+    for (const p of projects) {
+      if (p.start) dates.push(new Date(p.start));
+      if (p.due)   dates.push(new Date(p.due));
+      for (const s of (p.stages || [])) {
+        if (s.start) dates.push(new Date(s.start));
+        if (s.end)   dates.push(new Date(s.end));
+      }
+    }
+    // Always include TODAY so the "today line" is visible
+    dates.push(new Date(TODAY));
+    if (dates.length === 0) return null;
+    const min = new Date(Math.min(...dates.map(d => d.getTime())));
+    const max = new Date(Math.max(...dates.map(d => d.getTime())));
+    // Add 14 days of buffer on each side
+    min.setDate(min.getDate() - 14);
+    max.setDate(max.getDate() + 14);
+    const totalDays = daysBetween(min, max) + 1;
+    return { start: min, end: max, totalDays };
+  }, [projects]);
+
+  if (!range || projects.length === 0) {
+    return <div className="empty-state">沒有可顯示的專案。先建一個專案、給階段設定起／迄日期，就會在這裡看到甘特圖。</div>;
+  }
+
+  const dayOffset = (iso) => daysBetween(range.start, new Date(iso));
+  const totalWidth = range.totalDays * GANTT_PX_PER_DAY;
+  const todayOffset = dayOffset(toISODate(TODAY)) * GANTT_PX_PER_DAY;
+
+  // Build month tick marks for the header
+  const monthTicks = [];
+  let cursor = new Date(range.start.getFullYear(), range.start.getMonth(), 1);
+  while (cursor <= range.end) {
+    const offset = daysBetween(range.start, cursor) * GANTT_PX_PER_DAY;
+    monthTicks.push({
+      offset,
+      label: `${cursor.getFullYear()}.${String(cursor.getMonth() + 1).padStart(2, '0')}`,
+    });
+    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+  }
+
+  return (
+    <div className="gantt-scroll">
+      <div className="gantt" style={{ width: GANTT_LABEL_WIDTH + totalWidth }}>
+        {/* Header: month ticks */}
+        <div className="gantt-header" style={{ paddingLeft: GANTT_LABEL_WIDTH }}>
+          <div className="gantt-header-track" style={{ width: totalWidth }}>
+            {monthTicks.map((t, i) => (
+              <div key={i} className="gantt-month-tick" style={{ left: t.offset }}>
+                <span className="gantt-month-label">{t.label}</span>
+              </div>
+            ))}
+            <div className="gantt-today-line" style={{ left: todayOffset }} title="今天" />
+          </div>
+        </div>
+
+        {/* Project rows */}
+        <div className="gantt-body">
+          {projects.map((p, pIdx) => (
+            <GanttRow
+              key={p.id}
+              project={p}
+              colorBase={GANTT_STAGE_COLORS[pIdx % GANTT_STAGE_COLORS.length]}
+              dayOffset={dayOffset}
+              totalWidth={totalWidth}
+              todayOffset={todayOffset}
+              onResizeStage={onResizeStage}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GanttRow({ project, colorBase, dayOffset, totalWidth, todayOffset, onResizeStage }) {
+  const stagesWithDates = (project.stages || []).filter(s => s.start && s.end);
+  const dueOffset = project.due ? dayOffset(project.due) * GANTT_PX_PER_DAY : null;
+
+  return (
+    <div className="gantt-row" style={{ height: GANTT_ROW_HEIGHT }}>
+      <div className="gantt-row-label" style={{ width: GANTT_LABEL_WIDTH }}>
+        <div className="gantt-row-title">{project.title}</div>
+        <div className="gantt-row-client">{project.client}</div>
+      </div>
+      <div className="gantt-row-track" style={{ width: totalWidth }}>
+        <div className="gantt-today-line gantt-today-faint" style={{ left: todayOffset }} />
+        {stagesWithDates.map((stage, sIdx) => (
+          <GanttStageBar
+            key={stage.id}
+            project={project}
+            stage={stage}
+            color={colorBase}
+            dayOffset={dayOffset}
+            onResize={(change) => onResizeStage && onResizeStage(project.id, stage.id, change)}
+          />
+        ))}
+        {dueOffset != null && (
+          <div className="gantt-deadline" style={{ left: dueOffset }} title={`${project.title} 交件：${project.due}`}>
+            <div className="gantt-deadline-flag">🚚</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function GanttStageBar({ project, stage, color, dayOffset, onResize }) {
+  const barRef = useRef(null);
+  const dragStateRef = useRef(null);
+  // Local-only preview of bar position while dragging, so React state doesn't fire 50× a second
+  const [preview, setPreview] = useState(null);
+
+  const startISO = preview?.start ?? stage.start;
+  const endISO   = preview?.end   ?? stage.end;
+  const startOff = dayOffset(startISO);
+  const endOff   = dayOffset(endISO);
+  const left = startOff * GANTT_PX_PER_DAY;
+  const width = Math.max(GANTT_PX_PER_DAY, (endOff - startOff + 1) * GANTT_PX_PER_DAY);
+
+  const beginDrag = (mode) => (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragStateRef.current = {
+      mode, // 'move' | 'resize-l' | 'resize-r'
+      startX: e.clientX,
+      origStart: stage.start,
+      origEnd: stage.end,
+    };
+    const onMove = (mv) => {
+      const st = dragStateRef.current;
+      if (!st) return;
+      const deltaPx = mv.clientX - st.startX;
+      const deltaDays = Math.round(deltaPx / GANTT_PX_PER_DAY);
+      if (deltaDays === 0) { setPreview(null); return; }
+      if (st.mode === 'move') {
+        setPreview({
+          start: addDays(st.origStart, deltaDays),
+          end:   addDays(st.origEnd, deltaDays),
+        });
+      } else if (st.mode === 'resize-l') {
+        const newStart = addDays(st.origStart, deltaDays);
+        // Don't let start go past end
+        if (newStart <= st.origEnd) setPreview({ start: newStart, end: st.origEnd });
+      } else if (st.mode === 'resize-r') {
+        const newEnd = addDays(st.origEnd, deltaDays);
+        if (newEnd >= st.origStart) setPreview({ start: st.origStart, end: newEnd });
+      }
+    };
+    const onUp = () => {
+      const st = dragStateRef.current;
+      const pv = preview;
+      // Read latest preview via ref so we don't miss the final value due to stale closure
+      const finalPreview = barRef.current?.dataset?.pv ? JSON.parse(barRef.current.dataset.pv) : pv;
+      dragStateRef.current = null;
+      setPreview(null);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      if (finalPreview && (finalPreview.start !== stage.start || finalPreview.end !== stage.end)) {
+        if (st && st.mode === 'move') {
+          onResize({ start: finalPreview.start, end: finalPreview.end });
+        } else if (st && st.mode === 'resize-l') {
+          onResize({ start: finalPreview.start });
+        } else if (st && st.mode === 'resize-r') {
+          onResize({ end: finalPreview.end });
+        }
+      }
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  // Stash latest preview on the DOM so onUp sees the final value (avoiding stale closure)
+  useEffect(() => {
+    if (barRef.current) {
+      if (preview) barRef.current.dataset.pv = JSON.stringify(preview);
+      else delete barRef.current.dataset.pv;
+    }
+  }, [preview]);
+
+  return (
+    <div
+      ref={barRef}
+      className={`gantt-bar ${preview ? 'dragging' : ''}`}
+      style={{ left, width, background: color }}
+      onMouseDown={beginDrag('move')}
+      title={`${stage.label}：${startISO} → ${endISO}（拖移整段、或拖左右邊緣調長度）`}
+    >
+      <div className="gantt-handle gantt-handle-l" onMouseDown={beginDrag('resize-l')} />
+      <span className="gantt-bar-label">{stage.emoji} {stage.label}</span>
+      <div className="gantt-handle gantt-handle-r" onMouseDown={beginDrag('resize-r')} />
+    </div>
+  );
+}
+
 // ---------- Finance page (cash flow + cross-project summary) ----------
-function FinancePage({ projects, settings, onOpenSettings, onUpdateExtraExpenses, onUpdateCustomCategories }) {
+function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdateExtraExpenses, onUpdateCustomCategories }) {
+  const handleExport = () => {
+    const data = buildExportData(allProjects || projects, settings || {});
+    const today = toISODate(TODAY);
+    downloadJSON(data, `jt745-data-${today}.json`);
+  };
+
   const hasSettings = settings && (settings.bankBalance !== undefined && settings.bankBalance !== null && settings.bankBalance !== '');
   const series = useMemo(
     () => hasSettings ? buildCashflowSeries(projects, settings, 12) : null,
@@ -1970,6 +2770,12 @@ function FinancePage({ projects, settings, onOpenSettings, onUpdateExtraExpenses
 
   return (
     <>
+      <div className="finance-toolbar">
+        <button className="btn btn-ghost small" onClick={handleExport} title="下載一個 JSON 檔，整理好所有現況讓 Claude 看">
+          📥 匯出給 Claude
+        </button>
+      </div>
+
       <CashflowPanel
         series={series}
         hasSettings={hasSettings}
@@ -2197,6 +3003,34 @@ function Tracker({ session, onSignOut }) {
       if (changed) saveProjectInDB(changed);
       return next;
     });
+  };
+
+  // Mutually-exclusive info/cost panels across ALL projects.
+  // Clicking any project's 💲 / ⓘ closes whatever was open on other cards.
+  const onTogglePanel = (projectId, panel /* 'info' | 'costs' */) => {
+    const key = panel === 'info' ? 'infoOpen' : 'costsOpen';
+    setProjects(prev => {
+      const target = prev.find(p => p.id === projectId);
+      const willOpen = target ? !target[key] : true;
+      const next = prev.map(p => {
+        if (p.id === projectId) {
+          const updated = { ...p, infoOpen: false, costsOpen: false };
+          updated[key] = willOpen;
+          if (updated.infoOpen !== p.infoOpen || updated.costsOpen !== p.costsOpen) saveProjectInDB(updated);
+          return updated;
+        }
+        // Close any open panels on other projects (and persist that closure)
+        if (p.infoOpen || p.costsOpen) {
+          const updated = { ...p, infoOpen: false, costsOpen: false };
+          saveProjectInDB(updated);
+          return updated;
+        }
+        return p;
+      });
+      return next;
+    });
+    // Also close any expanded stage when switching panels
+    setExpanded(null);
   };
   const onDeleteProject = (id) => {
     setProjects(prev => {
@@ -2457,6 +3291,7 @@ function Tracker({ session, onSignOut }) {
                       onDeleteStage={onDeleteStage}
                       onInsertStage={onInsertStage}
                       onUpdateProject={onUpdateProject}
+                      onTogglePanel={onTogglePanel}
                       onDeleteProject={onDeleteProject}
                       onRestore={onRestoreProject}
                       onPurgeProject={onPurgeProject}
@@ -2486,10 +3321,29 @@ function Tracker({ session, onSignOut }) {
           {currentPage === 'finance' && (
             <FinancePage
               projects={activeProjects}
+              allProjects={projects}
               settings={globalSettings || {}}
               onOpenSettings={() => setShowCashSettings(true)}
               onUpdateExtraExpenses={onUpdateExtraExpenses}
               onUpdateCustomCategories={onUpdateCustomCategories}
+            />
+          )}
+
+          {currentPage === 'calendar' && (
+            <CalendarPage
+              projects={activeProjects}
+              onMoveEvent={(eventInfo, newDate) => {
+                const project = projects.find(p => p.id === eventInfo.projectId);
+                if (!project) return;
+                const patch = patchForCalendarEvent(project, eventInfo, newDate);
+                if (patch) onUpdateProject(eventInfo.projectId, patch);
+              }}
+              onResizeStage={(projectId, stageId, change) => {
+                const project = projects.find(p => p.id === projectId);
+                if (!project) return;
+                const patch = patchForStageBarChange(project, stageId, change);
+                if (patch) onUpdateProject(projectId, patch);
+              }}
             />
           )}
         </main>

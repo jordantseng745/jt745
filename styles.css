@@ -344,6 +344,335 @@ input, textarea { font-family: inherit; }
 }
 .confirm-btn.on:hover { background: #059669; }
 
+/* ===== Item bar date picker (small inline date field) ===== */
+.item-bar-date {
+  width: 138px;
+  padding: 4px 8px;
+  font-size: 11.5px;
+  flex-shrink: 0;
+  margin-right: 6px;
+}
+.item-bar-date.empty {
+  color: var(--text-3);
+  opacity: 0.55;
+}
+.item-bar-date.empty:hover { opacity: 1; }
+.item-bar-date.has-date {
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+/* ===================== Calendar page ===================== */
+.calendar-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.calendar-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cal-month-label {
+  font-size: 22px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  min-width: 130px;
+  text-align: center;
+}
+.cal-nav-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+.cal-nav-btn:hover { background: var(--bg-sunken); }
+
+.view-toggle {
+  display: flex;
+  gap: 2px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 3px;
+}
+.view-toggle button {
+  border: none;
+  background: transparent;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  cursor: pointer;
+  font: inherit;
+}
+.view-toggle button.on {
+  background: var(--bg-elev);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+
+.calendar-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  background: var(--bg-sunken);
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  font-size: 11.5px;
+}
+
+.calendar-toolbar-right {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.cal-hint {
+  font-size: 11px;
+  color: var(--text-3);
+  font-style: italic;
+}
+
+/* Fullscreen overlay (used by Gantt's "全螢幕" button) */
+.calendar-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: var(--bg-base, #faf9f7);
+  overflow: auto;
+  padding: 24px;
+}
+
+/* Drag-over highlight on calendar cells */
+.cal-cell.drag-over {
+  background: rgba(16,185,129,0.12) !important;
+  outline: 2px solid rgba(16,185,129,0.5);
+  outline-offset: -2px;
+}
+.cal-event-chip[draggable="true"] {
+  cursor: grab;
+}
+.cal-event-chip[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+/* ---- Month view ---- */
+.cal-month {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+.cal-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--border);
+}
+.cal-weekdays > div {
+  padding: 8px 6px;
+  text-align: center;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  font-weight: 500;
+}
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+}
+.cal-cell {
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  min-height: 110px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cal-cell:nth-child(7n) { border-right: none; }
+.cal-grid > .cal-cell:nth-last-child(-n+7) { border-bottom: none; }
+.cal-cell.out-month {
+  background: var(--bg-sunken);
+}
+.cal-cell.out-month .cal-cell-day { color: var(--text-3); opacity: 0.55; }
+.cal-cell.today {
+  background: rgba(16,185,129,0.06);
+}
+.cal-cell.today .cal-cell-day {
+  background: #1a1917;
+  color: #fff;
+  border-radius: 999px;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  font-weight: 600;
+}
+.cal-cell-day {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+.cal-cell-events {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-height: 0;
+}
+.cal-event-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  background: var(--bg-sunken);
+  border-left: 3px solid #888;
+  border-radius: 4px;
+  font-size: 10.5px;
+  color: var(--text);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+.cal-event-emoji { font-size: 11px; flex-shrink: 0; }
+.cal-event-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cal-event-more {
+  font-size: 10px;
+  color: var(--text-3);
+  padding: 0 6px;
+  font-style: italic;
+}
+
+/* ---- List view ---- */
+.cal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.cal-list-day {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 18px;
+  padding: 14px 16px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-sm);
+}
+.cal-list-day.today {
+  border-color: rgba(16,185,129,0.5);
+  box-shadow: 0 0 0 1px rgba(16,185,129,0.2), var(--shadow-sm);
+}
+.cal-list-date-main {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+}
+.cal-list-date-sub {
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.04em;
+}
+.cal-list-events {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.cal-list-event {
+  display: flex;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--bg-sunken);
+  border-left: 3px solid #888;
+  border-radius: 8px;
+  align-items: flex-start;
+}
+.cal-list-event-body {
+  flex: 1;
+  min-width: 0;
+}
+.cal-list-event-title {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.45;
+}
+.cal-list-event-title strong {
+  font-weight: 600;
+}
+.cal-list-event-stage {
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+.cal-list-event-amount {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+  margin-top: 2px;
+}
+.cal-list-event-detail {
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+/* Finance page toolbar (top-right of finance tab) */
+.finance-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+/* Extra expense actions row (sits between runway banner and list) */
+.extra-actions-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: 4px 0 10px;
+  flex-wrap: wrap;
+}
+.extra-actions-row .section-hint {
+  margin-bottom: 0;
+  flex: 1;
+  min-width: 0;
+}
+.extra-actions-buttons {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.btn.btn-primary.small {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
 /* Collapsible section header */
 .page-section-header.collapsible {
   align-items: center;
@@ -2435,6 +2764,24 @@ input, textarea { font-family: inherit; }
     gap: 8px;
     text-align: center;
   }
+
+  /* Calendar mobile tweaks */
+  .calendar-toolbar { flex-direction: column; align-items: stretch; gap: 10px; }
+  .calendar-title { justify-content: space-between; }
+  .cal-month-label { font-size: 18px; min-width: 0; }
+  .cal-cell { min-height: 72px; padding: 4px; }
+  .cal-event-chip {
+    font-size: 9.5px;
+    padding: 1px 4px;
+  }
+  .cal-event-label { display: none; }
+  .cal-event-emoji { font-size: 10px; }
+  .cal-cell-events { gap: 2px; }
+  .cal-list-day {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .item-bar-date { width: 110px; font-size: 11px; }
 }
 
 /* Extra-tight phones (≤ 380px) — Galaxy S, smaller iPhones */
@@ -2443,4 +2790,161 @@ input, textarea { font-family: inherit; }
   .topbar h1 { font-size: 19px; }
   .topbar-right .btn-primary { min-width: 0; padding: 0 10px; }
   .cashflow-canvas-wrap { height: 200px; }
+}
+
+/* ===================== Gantt view ===================== */
+.gantt-scroll {
+  overflow-x: auto;
+  overflow-y: visible;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-sm);
+}
+.gantt {
+  position: relative;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.gantt-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--border);
+  height: 32px;
+  display: flex;
+  align-items: stretch;
+}
+.gantt-header-track {
+  position: relative;
+  height: 100%;
+}
+.gantt-month-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--border);
+}
+.gantt-month-label {
+  position: absolute;
+  top: 50%;
+  left: 6px;
+  transform: translateY(-50%);
+  color: var(--text-3);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.gantt-today-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #ef4444;
+  z-index: 3;
+  pointer-events: none;
+}
+.gantt-today-line.gantt-today-faint {
+  background: rgba(239,68,68,0.35);
+  width: 1px;
+}
+.gantt-body {
+  display: flex;
+  flex-direction: column;
+}
+.gantt-row {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  position: relative;
+}
+.gantt-row:last-child { border-bottom: none; }
+.gantt-row-label {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  flex-shrink: 0;
+  padding: 8px 12px;
+  background: var(--bg-elev);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  font-family: var(--font-sans, system-ui);
+}
+.gantt-row-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gantt-row-client {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gantt-row-track {
+  position: relative;
+  flex: 0 0 auto;
+}
+.gantt-bar {
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  border-radius: 6px;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  font-family: var(--font-sans, system-ui);
+  font-size: 12px;
+  cursor: grab;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.18);
+  user-select: none;
+  overflow: hidden;
+  transition: filter 0.12s ease, transform 0.12s ease;
+}
+.gantt-bar:hover { filter: brightness(1.08); }
+.gantt-bar.dragging {
+  cursor: grabbing;
+  filter: brightness(1.15);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+  z-index: 4;
+}
+.gantt-bar-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+  pointer-events: none;
+}
+.gantt-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+  background: rgba(0,0,0,0.15);
+}
+.gantt-handle:hover { background: rgba(0,0,0,0.35); }
+.gantt-handle-l { left: 0; border-radius: 6px 0 0 6px; }
+.gantt-handle-r { right: 0; border-radius: 0 6px 6px 0; }
+.gantt-deadline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #dc2626;
+}
+.gantt-deadline-flag {
+  position: absolute;
+  top: -4px;
+  left: -10px;
+  font-size: 14px;
 }
