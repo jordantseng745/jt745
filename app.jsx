@@ -2,14 +2,116 @@
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
 // ---------- Constants ----------
+// Six-stage default template. Each stage has:
+//   items     — default items shown when a project is created
+//   altItems  — optional / case-by-case items the user can pick from a dropdown
+//               to re-add after deleting, or to add for special projects
 const DEFAULT_STAGES_TPL = [
-  { emoji: '🔍', label: '評估期',   en: 'Evaluation',     items: ['與客戶初步溝通', '評估技術可行性', '提出初步報價', '簽訂保密協議 (NDA)'] },
-  { emoji: '📝', label: '簽約啟動', en: 'Sign-off',        items: ['確認最終合約條款', '收取訂金', '建立專案資料夾', '召開 kickoff 會議'] },
-  { emoji: '🎬', label: '前期開發', en: 'Pre-production',  items: ['完成劇本／腳本', '角色設計定稿', '場景設計定稿', '分鏡與動態腳本'] },
-  { emoji: '🎨', label: '美術製作', en: 'Art & Build',     items: ['偶頭與骨架製作', '服裝與道具', '場景搭建', '燈光測試'] },
-  { emoji: '📷', label: '拍攝後製', en: 'Shoot & Post',    items: ['動畫主拍攝', '配音與音效', '剪輯與調色', '特效合成'] },
-  { emoji: '✅', label: '交件收款', en: 'Delivery',        items: ['客戶試片會', '修改反饋處理', '母帶交付', '尾款請款'] },
+  {
+    label: '評估期',
+    items: [
+      '收到客戶詢問',
+      '與客戶討論需求（電話或 email）',
+      '評估製作可行性與成本結構',
+      '確定報價金額',
+      '寄出報價單',
+      '客戶簽署報價單',
+      '收取訂金（50%）',
+    ],
+    altItems: [],
+  },
+  {
+    label: '前期製作',
+    items: [
+      '腳本發想',
+      '氛圍設計（Moodboard / 創作意圖）',
+      '分鏡設計',
+      '美術設計',
+      '道具設計',
+      '客戶提報（前期全部 Review）',
+    ],
+    altItems: [],
+  },
+  {
+    label: '美術製作',
+    items: [
+      '場景訂製',
+      '角色訂製',
+      '內部確認',
+      '客戶最終確認',
+    ],
+    altItems: [
+      '採買場景陳設材料',
+      '場景陳設搭建',
+      '角色採買',
+      '角色改造',
+    ],
+  },
+  {
+    label: '拍攝',
+    items: [
+      '場景陳設',
+      '燈光架設',
+      'Motion Board 製作',
+      '正式動畫拍攝',
+      '側錄 / 縮時攝影',
+      '拍攝心得紀錄',
+      '過檔給後製',
+      '交付 A copy 給客戶',
+    ],
+    altItems: [],
+  },
+  {
+    label: '後製',
+    items: [
+      '建立鏡頭後製表',
+      '支架修除',
+      '特效製作',
+      '特效輸出',
+      '影像調光',
+      '音效製作',
+      '音樂製作',
+      '交付 B copy 給客戶確認',
+      '客戶反饋修改',
+      '交付最終版本',
+    ],
+    altItems: [
+      '字幕製作',
+      '動態包裝 / Motion Graphics',
+      '多版本輸出（社群版、橫式、直式）',
+      '配音錄製',
+    ],
+  },
+  {
+    label: '最終交付',
+    items: [
+      '提供高解析檔案',
+      '安排上傳日期',
+      '開立並寄送發票',
+      '收取尾款',
+    ],
+    altItems: [
+      '上傳作品集',
+      '結案內部回顧',
+    ],
+  },
 ];
+
+// Quickly find the template for a stage by its label (so older projects that
+// may use the old label set just don't see template suggestions).
+const findStageTemplate = (stageLabel) => DEFAULT_STAGES_TPL.find(t => t.label === stageLabel);
+
+// Sort items by start date (then end date). Items without any date sink to the bottom.
+function sortItemsByDate(items) {
+  return [...items].sort((a, b) => {
+    const ad = (a.start || a.end || a.dueDate || '');
+    const bd = (b.start || b.end || b.dueDate || '');
+    if (!ad && !bd) return 0;
+    if (!ad) return 1;
+    if (!bd) return -1;
+    return ad < bd ? -1 : ad > bd ? 1 : 0;
+  });
+}
 
 const STAGE_EMOJIS = ['🔍','📝','🎬','🎨','📷','✂️','✨','🎙️','🎞️','📦','✅','💰','🎭','🛠️'];
 
@@ -88,8 +190,13 @@ const makeStage = (tpl, statusOverride) => ({
   start: '',
   end: '',
   note: '',
-  items: (tpl.items || []).map(t => ({ id: uid('i'), text: t, done: false, dueDate: '' })),
+  items: (tpl.items || []).map(t => ({ id: uid('i'), text: t, done: false, start: '', end: '' })),
 });
+
+// Read effective start/end for an item, falling back to the legacy `dueDate` field
+// (which acted as a single-day deadline before we split it into start/end).
+const getItemEnd = (it) => it?.end || it?.dueDate || '';
+const getItemStart = (it) => it?.start || '';
 
 const seed = () => {
   const mk = (data, statuses, doneItems = []) => {
@@ -275,12 +382,50 @@ const DAILY_QUOTES = [
   { text: '慎終如始，則無敗事。', author: '老子' },
   { text: '天下莫柔弱於水，而攻堅強者莫之能勝。', author: '老子' },
   { text: '民不畏死，奈何以死懼之。', author: '老子' },
+  // Peter Thiel
+  { text: '競爭是輸家在玩的遊戲。', author: 'Peter Thiel' },
+  { text: '我們想要的是飛行車，得到的卻是 140 個字元。', author: 'Peter Thiel' },
+  { text: '壟斷才是每個成功企業的真實狀態，但壟斷者總是假裝自己不是壟斷。', author: 'Peter Thiel' },
+  { text: '真正的創新是從 0 到 1，不是從 1 到 n。', author: 'Peter Thiel' },
+  { text: '商業中的每個時刻只發生一次。下一個賈伯斯不會做 iPhone，下一個祖克伯不會做社群網站。', author: 'Peter Thiel' },
+  { text: '最逆主流的事，不是反對群眾，而是自己思考。', author: 'Peter Thiel' },
+  { text: '從一個小到能被你壟斷的市場開始。', author: 'Peter Thiel' },
+  { text: '全球化是水平的進步；科技是垂直的進步。', author: 'Peter Thiel' },
+  { text: '新創公司是你能說服一群人相信、能打造不同未來的最大團體。', author: 'Peter Thiel' },
+  { text: '創造新市場比在現有市場搶占份額容易得多。', author: 'Peter Thiel' },
+  { text: '想創造並掌握長期價值，就不要做沒有差異的商品事業。', author: 'Peter Thiel' },
+  { text: '失敗的公司逃不過競爭，成功的公司逃離競爭。', author: 'Peter Thiel' },
+  { text: '勇氣比天才更稀缺。', author: 'Peter Thiel' },
+  { text: '壞的計畫好過沒有計畫。', author: 'Peter Thiel' },
+  { text: '相信「明天的世界會自然變好」是最危險的想法。', author: 'Peter Thiel' },
+  { text: '科技不是運氣的產物，是長期、刻意的選擇。', author: 'Peter Thiel' },
+  { text: '創業者必須同時樂觀地相信會成功、悲觀地為失敗做準備。', author: 'Peter Thiel' },
+  { text: '在還沒人相信你之前，先問自己：你相信什麼別人不相信的真理？', author: 'Peter Thiel' },
+  { text: '銷售比產品更難被看見，但它跟產品同樣重要。', author: 'Peter Thiel' },
+  { text: '錢是讓你不必再為錢工作的工具，不是炫耀的勳章。', author: 'Peter Thiel' },
 ];
 
+// Deterministic Fisher-Yates shuffle (fixed seed) so authors interleave instead of
+// appearing in 20-day clumps. Computed once at script load.
+const SHUFFLED_QUOTES = (() => {
+  const arr = [...DAILY_QUOTES];
+  let seed = 1729; // any fixed seed
+  const rand = () => {
+    seed = (seed * 1664525 + 1013904223) % 2147483648;
+    return seed / 2147483648;
+  };
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+})();
+
 function getDailyQuote() {
-  const start = new Date(TODAY.getFullYear(), 0, 0);
-  const dayOfYear = Math.floor((TODAY - start) / 86400000);
-  return DAILY_QUOTES[dayOfYear % DAILY_QUOTES.length];
+  // Use full date as key so the quote changes each calendar day, not each script reload.
+  const d = TODAY;
+  const key = d.getFullYear() * 372 + (d.getMonth() + 1) * 31 + d.getDate();
+  return SHUFFLED_QUOTES[key % SHUFFLED_QUOTES.length];
 }
 
 // ---------- Tweak defaults ----------
@@ -467,18 +612,16 @@ function StageBar({ variant, stages, selectedStageId, onClick, onCycle, onInsert
         };
         const segBody = variant === 'dots' ? (
           <button key={s.id} className={cls} data-stage-id={s.id} onClick={handleClick} title={`${s.label} — Shift+點擊切換狀態`}>
-            <div className="dot"><span className="bullet">•</span></div>
+            <div className="dot"></div>
             <span className="seg-label">{s.label}</span>
           </button>
         ) : variant === 'blocks' ? (
           <button key={s.id} className={cls} data-stage-id={s.id} onClick={handleClick} title={`${s.label} — Shift+點擊切換狀態`}>
             <span className="status-pip"></span>
-            <span className="bullet">•</span>
             <span className="seg-label">{s.label}</span>
           </button>
         ) : (
           <button key={s.id} className={cls} data-stage-id={s.id} onClick={handleClick} title={`${s.label} — Shift+點擊切換狀態`}>
-            <span className="bullet">•</span>
             <span className="seg-label">{s.label}</span>
           </button>
         );
@@ -545,6 +688,7 @@ function ItemStatusDropdown({ value, onChange }) {
 function ChecklistEditor({ stage, onUpdate }) {
   const [draft, setDraft] = useState('');
   const inputRef = useRef(null);
+  const [dragOverItemId, setDragOverItemId] = useState(null);
 
   const setItemStatus = (id, newStatus) => {
     const items = stage.items.map(it => {
@@ -562,15 +706,61 @@ function ChecklistEditor({ stage, onUpdate }) {
   const remove = (id) => {
     onUpdate({ ...stage, items: stage.items.filter(it => it.id !== id) });
   };
+  // Add either from the custom text input OR from a quick-pick (preset/alt) item
+  const addItem = (text) => {
+    const t = text.trim();
+    if (!t) return;
+    onUpdate({
+      ...stage,
+      items: [...stage.items, { id: uid('i'), text: t, done: false, status: 'todo', start: '', end: '' }]
+    });
+  };
   const add = (e) => {
     e?.preventDefault();
     if (!draft.trim()) return;
-    onUpdate({
-      ...stage,
-      items: [...stage.items, { id: uid('i'), text: draft.trim(), done: false, status: 'todo', dueDate: '' }]
-    });
+    addItem(draft);
     setDraft('');
     setTimeout(() => inputRef.current?.focus(), 0);
+  };
+
+  // Drag-reorder: when one item-bar is dropped onto another, move it to that position.
+  const onItemDrop = (targetId) => (e) => {
+    if (!e.dataTransfer.types.includes('application/x-item-reorder')) return;
+    e.preventDefault();
+    setDragOverItemId(null);
+    const sourceId = e.dataTransfer.getData('application/x-item-reorder');
+    if (!sourceId || sourceId === targetId) return;
+    const items = [...stage.items];
+    const fromIdx = items.findIndex(x => x.id === sourceId);
+    const toIdx = items.findIndex(x => x.id === targetId);
+    if (fromIdx < 0 || toIdx < 0) return;
+    const [moved] = items.splice(fromIdx, 1);
+    items.splice(toIdx, 0, moved);
+    onUpdate({ ...stage, items });
+  };
+
+  // Auto-sort by date (one-click). Items without dates fall to the bottom.
+  const autoSort = () => {
+    onUpdate({ ...stage, items: sortItemsByDate(stage.items) });
+  };
+
+  // Build list of available pre-defined items for the dropdown.
+  // We show items from EVERY stage template (grouped by stage label), filtered
+  // to exclude items already present in the current stage. This way the dropdown
+  // is always useful — even for older stages whose label doesn't match a current
+  // template, the user can still pick from the full library of pre-defined items.
+  const presentTexts = new Set(stage.items.map(x => x.text));
+  const allStagesAvailable = DEFAULT_STAGES_TPL.map(t => ({
+    label: t.label,
+    items: [...t.items, ...(t.altItems || [])].filter(text => !presentTexts.has(text)),
+  })).filter(g => g.items.length > 0);
+  const hasAnyAvailable = allStagesAvailable.length > 0;
+
+  const onQuickPick = (e) => {
+    const val = e.target.value;
+    if (!val) return;
+    addItem(val);
+    e.target.value = ''; // reset dropdown
   };
 
   const confirmedCount = stage.items.filter(it => itemStatus(it) === 'confirmed').length;
@@ -580,21 +770,44 @@ function ChecklistEditor({ stage, onUpdate }) {
 
   return (
     <div className="detail-section" style={{ gridColumn: '1 / -1' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div className="checklist-header">
         <div className="section-label">工作項目</div>
-        <div className="stage-progress-mini">
-          {confirmedCount > 0 && <span>{confirmedCount} 確認 · </span>}
-          {doneCount > 0 && <span>{doneCount} 完成 · </span>}
-          {activeCount > 0 && <span>{activeCount} 進行中 · </span>}
-          {blockedCount > 0 && <span className="blocked-count">{blockedCount} 排除問題 · </span>}
-          共 {stage.items.length}
+        <div className="checklist-header-right">
+          <button className="btn btn-ghost small" onClick={autoSort} title="把有日期的項目按起始日期排前面">↕ 按日期排序</button>
+          <div className="stage-progress-mini">
+            {confirmedCount > 0 && <span>{confirmedCount} 確認 · </span>}
+            {doneCount > 0 && <span>{doneCount} 完成 · </span>}
+            {activeCount > 0 && <span>{activeCount} 進行中 · </span>}
+            {blockedCount > 0 && <span className="blocked-count">{blockedCount} 排除問題 · </span>}
+            共 {stage.items.length}
+          </div>
         </div>
       </div>
       <div className="item-bars">
         {stage.items.map(it => {
           const st = itemStatus(it);
           return (
-            <div key={it.id} className={`item-bar status-${st}`}>
+            <div
+              key={it.id}
+              className={`item-bar status-${st} ${dragOverItemId === it.id ? 'reorder-target' : ''}`}
+              onDragOver={(e) => {
+                if (e.dataTransfer.types.includes('application/x-item-reorder')) {
+                  e.preventDefault();
+                  setDragOverItemId(it.id);
+                }
+              }}
+              onDragLeave={() => { if (dragOverItemId === it.id) setDragOverItemId(null); }}
+              onDrop={onItemDrop(it.id)}
+            >
+              <div
+                className="item-drag-handle"
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.effectAllowed = 'move';
+                  e.dataTransfer.setData('application/x-item-reorder', it.id);
+                }}
+                title="拖曳調整順序"
+              >⋮⋮</div>
               <div className="item-bar-actions-left">
                 {it.link && <a href={it.link} target="_blank" rel="noopener noreferrer" className="item-bar-link" title={it.link}>↗</a>}
                 <button className="item-bar-action" title={it.link ? '編輯連結' : '加入連結'} onClick={() => {
@@ -614,36 +827,96 @@ function ChecklistEditor({ stage, onUpdate }) {
               </div>
               {it.editing ? (
                 <div className="item-bar-text-area">
-                  <input className="input item-bar-edit" autoFocus defaultValue={it.text}
-                    onBlur={(e) => onUpdate({ ...stage, items: stage.items.map(x => x.id === it.id ? { ...x, text: e.target.value || x.text, editing: false } : x) })}
-                    onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') onUpdate({ ...stage, items: stage.items.map(x => x.id === it.id ? { ...x, editing: false } : x) }); }}
-                  />
+                  <select
+                    autoFocus
+                    defaultValue={it.text}
+                    className="input select item-bar-edit-select"
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      const finish = (newText) => onUpdate({
+                        ...stage,
+                        items: stage.items.map(x => x.id === it.id
+                          ? { ...x, text: newText, editing: false }
+                          : x)
+                      });
+                      const cancel = () => onUpdate({
+                        ...stage,
+                        items: stage.items.map(x => x.id === it.id ? { ...x, editing: false } : x)
+                      });
+                      if (v === '__custom__') {
+                        const custom = window.prompt('輸入自訂項目名稱：', it.text);
+                        const trimmed = (custom || '').trim();
+                        if (!trimmed) { cancel(); return; }
+                        finish(trimmed);
+                        return;
+                      }
+                      if (v === it.text) { cancel(); return; }
+                      finish(v);
+                    }}
+                    onBlur={() => onUpdate({
+                      ...stage,
+                      items: stage.items.map(x => x.id === it.id ? { ...x, editing: false } : x)
+                    })}
+                  >
+                    <option value={it.text}>{it.text}（目前）</option>
+                    {DEFAULT_STAGES_TPL.map(t => {
+                      const opts = [...t.items, ...(t.altItems || [])].filter(x => x !== it.text);
+                      return opts.length > 0 ? (
+                        <optgroup key={t.label} label={t.label}>
+                          {opts.map(text => <option key={text} value={text}>{text}</option>)}
+                        </optgroup>
+                      ) : null;
+                    })}
+                    <option value="__custom__">自訂…</option>
+                  </select>
                 </div>
               ) : (
                 <span className="item-bar-text">{it.text}</span>
               )}
-              <input
-                type="date"
-                className={`date-input compact item-bar-date ${it.dueDate ? 'has-date' : 'empty'}`}
-                value={it.dueDate || ''}
-                title={it.dueDate ? `交付日：${it.dueDate}` : '設定交付日（會出現在行事曆）'}
-                onChange={e => onUpdate({ ...stage, items: stage.items.map(x => x.id === it.id ? { ...x, dueDate: e.target.value } : x) })}
-              />
+              <div className="item-bar-dates">
+                <input
+                  type="date"
+                  className={`date-input compact item-bar-date ${getItemStart(it) ? 'has-date' : 'empty'}`}
+                  value={getItemStart(it)}
+                  title={getItemStart(it) ? `起：${getItemStart(it)}` : '起始日（可留空，當作單日截止）'}
+                  onChange={e => onUpdate({ ...stage, items: stage.items.map(x => x.id === it.id ? { ...x, start: e.target.value } : x) })}
+                />
+                <span className="item-bar-date-sep">→</span>
+                <input
+                  type="date"
+                  className={`date-input compact item-bar-date ${getItemEnd(it) ? 'has-date' : 'empty'}`}
+                  value={getItemEnd(it)}
+                  title={getItemEnd(it) ? `迄：${getItemEnd(it)}` : '結束 / 交付日（會出現在行事曆）'}
+                  onChange={e => onUpdate({ ...stage, items: stage.items.map(x => x.id === it.id ? { ...x, end: e.target.value, dueDate: '' } : x) })}
+                />
+              </div>
               <ItemStatusDropdown value={st} onChange={(newSt) => setItemStatus(it.id, newSt)} />
             </div>
           );
         })}
       </div>
-      <form className="add-item-row" onSubmit={add}>
-        <input
-          ref={inputRef}
-          className="input"
-          placeholder="新增工作項目…"
-          value={draft}
-          onChange={e => setDraft(e.target.value)}
-        />
-        <button type="submit" className="add-item-btn" aria-label="新增">+</button>
-      </form>
+      <div className="add-item-row">
+        <form onSubmit={add} className="add-item-form">
+          <input
+            ref={inputRef}
+            className="input"
+            placeholder="自訂新項目…"
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+          />
+          <button type="submit" className="add-item-btn" aria-label="新增">+</button>
+        </form>
+        {hasAnyAvailable && (
+          <select className="input select item-quick-pick" defaultValue="" onChange={onQuickPick}>
+            <option value="">+ 從預設加入…</option>
+            {allStagesAvailable.map(({ label, items }) => (
+              <optgroup key={label} label={label}>
+                {items.map(t => <option key={t} value={t}>{t}</option>)}
+              </optgroup>
+            ))}
+          </select>
+        )}
+      </div>
     </div>
   );
 }
@@ -683,7 +956,6 @@ function StageDetail({ project, stageId, onClose, onUpdateStage, onDeleteStage, 
         <div style={{ minWidth: 0 }}>
           <div className="detail-eyebrow">{project.title} · 階段</div>
           <h3 className="detail-title">
-            <span className="bullet">•</span>
             {renaming ? (
               <input
                 className="input title-input"
@@ -1100,12 +1372,40 @@ function buildCalendarEvents(projects) {
         label: `${s.label} 結束`,
         stageId: s.id,
       });
-      // Item due dates
+      // Item dates: if both start AND end are set (and different), emit one SPAN
+      // event so the month view can render a multi-day bar. Otherwise emit a single
+      // point event using whichever date is set.
       for (const it of (s.items || [])) {
-        if (it.dueDate) {
+        const iStart = getItemStart(it);
+        const iEnd = getItemEnd(it);
+        if (iStart && iEnd && iStart !== iEnd) {
           events.push({
-            date: it.dueDate,
+            date: iStart,
+            startDate: iStart,
+            endDate: iEnd,
+            kind: 'item-span',
+            projectId: p.id,
+            projectTitle: p.title,
+            label: it.text,
+            stageId: s.id,
+            itemId: it.id,
+            stageLabel: s.label,
+          });
+        } else if (iEnd) {
+          events.push({
+            date: iEnd,
             kind: 'item-due',
+            projectId: p.id,
+            projectTitle: p.title,
+            label: it.text,
+            stageId: s.id,
+            itemId: it.id,
+            stageLabel: s.label,
+          });
+        } else if (iStart) {
+          events.push({
+            date: iStart,
+            kind: 'item-start',
             projectId: p.id,
             projectTitle: p.title,
             label: it.text,
@@ -1168,13 +1468,34 @@ function patchForCalendarEvent(project, eventInfo, newDate) {
         stages: project.stages.map(s => s.id === stageId ? { ...s, [field]: newDate } : s),
       };
     }
+    case 'item-start':
+      return {
+        stages: project.stages.map(s => {
+          if (s.id !== stageId) return s;
+          return { ...s, items: s.items.map(it => it.id === itemId ? { ...it, start: newDate } : it) };
+        }),
+      };
     case 'item-due':
       return {
         stages: project.stages.map(s => {
           if (s.id !== stageId) return s;
-          return { ...s, items: s.items.map(it => it.id === itemId ? { ...it, dueDate: newDate } : it) };
+          // Migrate from legacy dueDate to new end field on drag
+          return { ...s, items: s.items.map(it => it.id === itemId ? { ...it, end: newDate, dueDate: '' } : it) };
         }),
       };
+    case 'item-span': {
+      // Preserve duration: shift end by same delta as start
+      const oldStart = eventInfo.startDate;
+      const oldEnd = eventInfo.endDate;
+      const duration = daysBetween(new Date(oldStart), new Date(oldEnd));
+      const newEnd = addDays(newDate, duration);
+      return {
+        stages: project.stages.map(s => {
+          if (s.id !== stageId) return s;
+          return { ...s, items: s.items.map(it => it.id === itemId ? { ...it, start: newDate, end: newEnd, dueDate: '' } : it) };
+        }),
+      };
+    }
     case 'payment-in':
       return {
         payments: getPayments(project).map(p => p.id === paymentId ? { ...p, dueDate: newDate } : p),
@@ -2513,7 +2834,9 @@ const CAL_KIND_META = {
   'delivery':    { color: '#dc2626', emoji: '🚚', name: '交件' },
   'stage-start': { color: '#3b82f6', emoji: '▶',  name: '階段開始' },
   'stage-end':   { color: '#10b981', emoji: '✓',  name: '階段結束' },
-  'item-due':    { color: '#8b5cf6', emoji: '📌', name: '細項交付' },
+  'item-start':  { color: '#a78bfa', emoji: '○',  name: '細項開始' },
+  'item-due':    { color: '#8b5cf6', emoji: '●',  name: '細項結束 / 交付' },
+  'item-span':   { color: '#8b5cf6', emoji: '▭',  name: '細項區間' },
   'payment-in':  { color: '#16a34a', emoji: '💰', name: '收款' },
   'payment-out': { color: '#f59e0b', emoji: '💸', name: '外包付款' },
 };
@@ -2598,7 +2921,7 @@ function CalendarPage({ projects, onMoveEvent, onResizeStage }) {
         {view === 'gantt' && <span className="cal-hint">💡 提示：拖動條移動、拖邊緣調長度</span>}
       </div>
 
-      {view === 'month' && <CalendarMonthView cursor={cursor} eventsByDate={eventsByDate} onMoveEvent={onMoveEvent} />}
+      {view === 'month' && <CalendarMonthView cursor={cursor} allEvents={allEvents} onMoveEvent={onMoveEvent} />}
       {view === 'list'  && <CalendarListView allEvents={allEvents} />}
       {view === 'gantt' && <CalendarGanttView projects={projects} onResizeStage={onResizeStage} />}
     </>
@@ -2610,7 +2933,26 @@ function CalendarPage({ projects, onMoveEvent, onResizeStage }) {
   return content;
 }
 
-function CalendarMonthView({ cursor, eventsByDate, onMoveEvent }) {
+// Helper: lane-assignment for spans in a week (so overlapping spans don't draw on top of each other)
+function assignLanes(segments) {
+  const sorted = [...segments].sort((a, b) => a.startCol - b.startCol);
+  const lanes = []; // each lane = list of segments placed in it
+  for (const seg of sorted) {
+    let placed = false;
+    for (const lane of lanes) {
+      const last = lane[lane.length - 1];
+      if (last.endCol < seg.startCol) {
+        lane.push(seg);
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) lanes.push([seg]);
+  }
+  return lanes;
+}
+
+function CalendarMonthView({ cursor, allEvents, onMoveEvent }) {
   const [dragOverDate, setDragOverDate] = useState(null);
   const { year, month } = cursor;
   const firstOfMonth = new Date(year, month, 1);
@@ -2619,22 +2961,30 @@ function CalendarMonthView({ cursor, eventsByDate, onMoveEvent }) {
   const daysInPrevMonth = new Date(year, month, 0).getDate();
   const todayISO = toISODate(TODAY);
 
-  // Build a 6×7 grid of cells (each cell = { date, inMonth })
+  // Build a 6×7 grid of cells, then group into 6 weeks
   const cells = [];
-  // leading blanks from previous month
   for (let i = startWeekday - 1; i >= 0; i--) {
     const d = new Date(year, month - 1, daysInPrevMonth - i);
     cells.push({ date: toISODate(d), day: d.getDate(), inMonth: false });
   }
-  // this month
   for (let d = 1; d <= daysInMonth; d++) {
     cells.push({ date: toISODate(new Date(year, month, d)), day: d, inMonth: true });
   }
-  // trailing blanks to fill out 42 cells (6 weeks)
   let next = 1;
   while (cells.length < 42) {
     const d = new Date(year, month + 1, next++);
     cells.push({ date: toISODate(d), day: d.getDate(), inMonth: false });
+  }
+  const weeks = [];
+  for (let w = 0; w < 6; w++) weeks.push(cells.slice(w * 7, (w + 1) * 7));
+
+  // Categorize events: spans (multi-day) vs points (single-day)
+  const spans = [];
+  const pointsByDate = {};
+  for (const e of allEvents) {
+    const isSpan = e.startDate && e.endDate && e.startDate !== e.endDate;
+    if (isSpan) spans.push(e);
+    else (pointsByDate[e.date] = pointsByDate[e.date] || []).push(e);
   }
 
   return (
@@ -2642,55 +2992,124 @@ function CalendarMonthView({ cursor, eventsByDate, onMoveEvent }) {
       <div className="cal-weekdays">
         {['日','一','二','三','四','五','六'].map(w => <div key={w}>{w}</div>)}
       </div>
-      <div className="cal-grid">
-        {cells.map((cell, i) => {
-          const evs = eventsByDate[cell.date] || [];
-          const isToday = cell.date === todayISO;
-          const isDragOver = dragOverDate === cell.date;
-          return (
-            <div
-              key={i}
-              className={`cal-cell ${cell.inMonth ? 'in-month' : 'out-month'} ${isToday ? 'today' : ''} ${isDragOver ? 'drag-over' : ''}`}
-              onDragOver={(e) => { if (onMoveEvent) { e.preventDefault(); setDragOverDate(cell.date); } }}
-              onDragLeave={() => { if (dragOverDate === cell.date) setDragOverDate(null); }}
-              onDrop={(e) => {
-                if (!onMoveEvent) return;
-                e.preventDefault();
-                setDragOverDate(null);
-                try {
-                  const data = JSON.parse(e.dataTransfer.getData('application/json') || '{}');
-                  if (data && data.date !== cell.date) onMoveEvent(data, cell.date);
-                } catch {}
-              }}
-            >
-              <div className="cal-cell-day">{cell.day}</div>
-              <div className="cal-cell-events">
-                {evs.slice(0, 3).map((e, idx) => {
-                  const meta = CAL_KIND_META[e.kind] || {};
-                  return (
-                    <div
-                      key={idx}
-                      className="cal-event-chip"
-                      style={{ borderLeftColor: meta.color }}
-                      title={`${e.projectTitle} · ${e.label}${e.amount ? ` (${fmtNT(e.amount)})` : ''}（拖到別的日期可改動日期）`}
-                      draggable={!!onMoveEvent}
-                      onDragStart={(ev) => {
-                        if (!onMoveEvent) return;
-                        ev.dataTransfer.effectAllowed = 'move';
-                        ev.dataTransfer.setData('application/json', JSON.stringify(e));
-                      }}
-                    >
-                      <span className="cal-event-emoji">{meta.emoji}</span>
-                      <span className="cal-event-label">{e.projectTitle} · {e.label}</span>
+      {weeks.map((weekCells, wIdx) => {
+        const weekStart = weekCells[0].date;
+        const weekEnd = weekCells[6].date;
+
+        // For each span event that overlaps this week, compute its column range
+        const segments = [];
+        for (const e of spans) {
+          if (e.endDate < weekStart || e.startDate > weekEnd) continue; // no overlap
+          const startInWeek = e.startDate < weekStart ? weekStart : e.startDate;
+          const endInWeek   = e.endDate   > weekEnd   ? weekEnd   : e.endDate;
+          const startCol = weekCells.findIndex(c => c.date === startInWeek);
+          const endCol   = weekCells.findIndex(c => c.date === endInWeek);
+          if (startCol < 0 || endCol < 0) continue;
+          segments.push({
+            event: e,
+            startCol,
+            endCol,
+            continuesLeft:  e.startDate < weekStart,
+            continuesRight: e.endDate   > weekEnd,
+          });
+        }
+        const lanes = assignLanes(segments);
+
+        return (
+          <div key={wIdx} className="cal-week">
+            {/* Day-number row + cell base layer (drop targets) */}
+            <div className="cal-week-cells">
+              {weekCells.map((cell, i) => {
+                const isToday = cell.date === todayISO;
+                const isDragOver = dragOverDate === cell.date;
+                return (
+                  <div
+                    key={i}
+                    className={`cal-cell ${cell.inMonth ? 'in-month' : 'out-month'} ${isToday ? 'today' : ''} ${isDragOver ? 'drag-over' : ''}`}
+                    onDragOver={(e) => { if (onMoveEvent) { e.preventDefault(); setDragOverDate(cell.date); } }}
+                    onDragLeave={() => { if (dragOverDate === cell.date) setDragOverDate(null); }}
+                    onDrop={(e) => {
+                      if (!onMoveEvent) return;
+                      e.preventDefault();
+                      setDragOverDate(null);
+                      try {
+                        const data = JSON.parse(e.dataTransfer.getData('application/json') || '{}');
+                        const targetDate = cell.date;
+                        if (!data) return;
+                        // For spans the comparison is against startDate
+                        const oldDate = data.startDate || data.date;
+                        if (oldDate !== targetDate) onMoveEvent(data, targetDate);
+                      } catch {}
+                    }}
+                  >
+                    <div className="cal-cell-day">{cell.day}</div>
+                    <div className="cal-cell-points">
+                      {(pointsByDate[cell.date] || []).slice(0, 3).map((e, idx) => {
+                        const meta = CAL_KIND_META[e.kind] || {};
+                        return (
+                          <div
+                            key={idx}
+                            className="cal-event-chip"
+                            style={{ borderLeftColor: meta.color }}
+                            title={`${e.projectTitle} · ${e.label}${e.amount ? ` (${fmtNT(e.amount)})` : ''}（拖到別的日期可改）`}
+                            draggable={!!onMoveEvent}
+                            onDragStart={(ev) => {
+                              if (!onMoveEvent) return;
+                              ev.dataTransfer.effectAllowed = 'move';
+                              ev.dataTransfer.setData('application/json', JSON.stringify(e));
+                            }}
+                          >
+                            <span className="cal-event-emoji">{meta.emoji}</span>
+                            <span className="cal-event-label">{e.projectTitle} · {e.label}</span>
+                          </div>
+                        );
+                      })}
+                      {(pointsByDate[cell.date] || []).length > 3 && (
+                        <div className="cal-event-more">+{(pointsByDate[cell.date].length - 3)} 項</div>
+                      )}
                     </div>
-                  );
-                })}
-                {evs.length > 3 && <div className="cal-event-more">+{evs.length - 3} 項</div>}
-              </div>
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
-      </div>
+
+            {/* Span bars: rendered as separate lane rows overlaying the week's cells */}
+            {lanes.length > 0 && (
+              <div className="cal-week-spans">
+                {lanes.map((laneSegs, laneIdx) => (
+                  <div key={laneIdx} className="cal-span-lane">
+                    {laneSegs.map((seg, segIdx) => {
+                      const meta = CAL_KIND_META[seg.event.kind] || {};
+                      return (
+                        <div
+                          key={segIdx}
+                          className={`cal-span-bar ${seg.continuesLeft ? 'continues-left' : ''} ${seg.continuesRight ? 'continues-right' : ''}`}
+                          style={{
+                            gridColumn: `${seg.startCol + 1} / ${seg.endCol + 2}`,
+                            background: meta.color,
+                          }}
+                          title={`${seg.event.projectTitle} · ${seg.event.label}（${seg.event.startDate} → ${seg.event.endDate}）`}
+                          draggable={!!onMoveEvent}
+                          onDragStart={(ev) => {
+                            if (!onMoveEvent) return;
+                            ev.dataTransfer.effectAllowed = 'move';
+                            ev.dataTransfer.setData('application/json', JSON.stringify(seg.event));
+                          }}
+                        >
+                          <span className="cal-span-label">
+                            {!seg.continuesLeft && <>{seg.event.projectTitle} · </>}
+                            {seg.event.label}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -2733,7 +3152,7 @@ function CalendarListView({ allEvents }) {
                     <div className="cal-list-event-body">
                       <div className="cal-list-event-title">
                         <strong>{e.projectTitle}</strong> · {e.label}
-                        {e.stageLabel && e.kind === 'item-due' && <span className="cal-list-event-stage"> ({e.stageLabel})</span>}
+                        {e.stageLabel && (e.kind === 'item-due' || e.kind === 'item-start') && <span className="cal-list-event-stage"> ({e.stageLabel})</span>}
                       </div>
                       {e.amount != null && <div className="cal-list-event-amount">{fmtNT(e.amount)}</div>}
                       {e.detail && <div className="cal-list-event-detail">{e.detail}</div>}
@@ -2786,34 +3205,62 @@ function CalendarGanttView({ projects, onResizeStage }) {
     return <div className="empty-state">沒有可顯示的專案。先建一個專案、給階段設定起／迄日期，就會在這裡看到甘特圖。</div>;
   }
 
+  const scrollRef = useRef(null);
   const dayOffset = (iso) => daysBetween(range.start, new Date(iso));
   const totalWidth = range.totalDays * GANTT_PX_PER_DAY;
   const todayOffset = dayOffset(toISODate(TODAY)) * GANTT_PX_PER_DAY;
 
-  // Build month tick marks for the header
+  // Auto-scroll to today (centered) on mount and whenever the date range shifts.
+  useEffect(() => {
+    if (!scrollRef.current) return;
+    const containerWidth = scrollRef.current.clientWidth;
+    const target = Math.max(0, GANTT_LABEL_WIDTH + todayOffset - containerWidth / 2);
+    scrollRef.current.scrollLeft = target;
+  }, [todayOffset]);
+
+  // Month tick marks (top row of header)
   const monthTicks = [];
-  let cursor = new Date(range.start.getFullYear(), range.start.getMonth(), 1);
-  while (cursor <= range.end) {
-    const offset = daysBetween(range.start, cursor) * GANTT_PX_PER_DAY;
+  let mc = new Date(range.start.getFullYear(), range.start.getMonth(), 1);
+  while (mc <= range.end) {
+    const offset = daysBetween(range.start, mc) * GANTT_PX_PER_DAY;
     monthTicks.push({
       offset,
-      label: `${cursor.getFullYear()}.${String(cursor.getMonth() + 1).padStart(2, '0')}`,
+      label: `${mc.getFullYear()}.${String(mc.getMonth() + 1).padStart(2, '0')}`,
     });
-    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+    mc = new Date(mc.getFullYear(), mc.getMonth() + 1, 1);
+  }
+
+  // Day tick marks (bottom row of header) — every 5 days for readability.
+  // Skip day 1 because the month tick already marks it.
+  const dayTicks = [];
+  const dc = new Date(range.start);
+  dc.setHours(0, 0, 0, 0);
+  while (dc <= range.end) {
+    const day = dc.getDate();
+    if (day !== 1 && day % 5 === 0) {
+      const offset = daysBetween(range.start, dc) * GANTT_PX_PER_DAY;
+      dayTicks.push({ offset, label: String(day) });
+    }
+    dc.setDate(dc.getDate() + 1);
   }
 
   return (
-    <div className="gantt-scroll">
+    <div className="gantt-scroll" ref={scrollRef}>
       <div className="gantt" style={{ width: GANTT_LABEL_WIDTH + totalWidth }}>
-        {/* Header: month ticks */}
+        {/* Header: month ticks (top) + day numbers (bottom) */}
         <div className="gantt-header" style={{ paddingLeft: GANTT_LABEL_WIDTH }}>
           <div className="gantt-header-track" style={{ width: totalWidth }}>
             {monthTicks.map((t, i) => (
-              <div key={i} className="gantt-month-tick" style={{ left: t.offset }}>
+              <div key={`m${i}`} className="gantt-month-tick" style={{ left: t.offset }}>
                 <span className="gantt-month-label">{t.label}</span>
               </div>
             ))}
-            <div className="gantt-today-line" style={{ left: todayOffset }} title="今天" />
+            {dayTicks.map((t, i) => (
+              <div key={`d${i}`} className="gantt-day-tick" style={{ left: t.offset }}>
+                <span className="gantt-day-label">{t.label}</span>
+              </div>
+            ))}
+            <div className="gantt-today-line" style={{ left: todayOffset }} title={`今天 ${toISODate(TODAY)}`} />
           </div>
         </div>
 
@@ -2947,11 +3394,15 @@ function GanttStageBar({ project, stage, color, dayOffset, onResize }) {
       className={`gantt-bar ${preview ? 'dragging' : ''}`}
       style={{ left, width, background: color }}
       onMouseDown={beginDrag('move')}
+      data-start={startISO}
+      data-end={endISO}
       title={`${stage.label}：${startISO} → ${endISO}（拖移整段、或拖左右邊緣調長度）`}
     >
       <div className="gantt-handle gantt-handle-l" onMouseDown={beginDrag('resize-l')} />
       <span className="gantt-bar-label">{stage.label}</span>
       <div className="gantt-handle gantt-handle-r" onMouseDown={beginDrag('resize-r')} />
+      <span className="gantt-date-popup gantt-date-popup-l">{startISO}</span>
+      <span className="gantt-date-popup gantt-date-popup-r">{endISO}</span>
     </div>
   );
 }

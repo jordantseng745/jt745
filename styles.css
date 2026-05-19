@@ -344,13 +344,19 @@ input, textarea { font-family: inherit; }
 }
 .confirm-btn.on:hover { background: #059669; }
 
-/* ===== Item bar date picker (small inline date field) ===== */
+/* ===== Item bar date pickers (起 → 迄) ===== */
+.item-bar-dates {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 6px;
+  flex-shrink: 0;
+}
 .item-bar-date {
-  width: 138px;
+  width: 124px;
   padding: 4px 8px;
   font-size: 11.5px;
-  flex-shrink: 0;
-  margin-right: 6px;
+  margin-right: 0;
 }
 .item-bar-date.empty {
   color: var(--text-3);
@@ -360,6 +366,12 @@ input, textarea { font-family: inherit; }
 .item-bar-date.has-date {
   color: var(--text);
   font-family: var(--font-mono);
+}
+.item-bar-date-sep {
+  color: var(--text-3);
+  font-size: 12px;
+  padding: 0 4px;
+  user-select: none;
 }
 
 /* ===================== Calendar page ===================== */
@@ -494,21 +506,27 @@ input, textarea { font-family: inherit; }
   color: var(--text-3);
   font-weight: 500;
 }
-.cal-grid {
+/* Each week is a stacked layout: cells (with day numbers + point events)
+   + a spans layer overlaying them so multi-day bars run across cells. */
+.cal-week {
+  position: relative;
+  border-bottom: 1px solid var(--border);
+}
+.cal-week:last-child { border-bottom: none; }
+.cal-week-cells {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
 }
 .cal-cell {
   border-right: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-  min-height: 110px;
+  min-height: 116px;
   padding: 6px;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  position: relative;
 }
 .cal-cell:nth-child(7n) { border-right: none; }
-.cal-grid > .cal-cell:nth-last-child(-n+7) { border-bottom: none; }
 .cal-cell.out-month {
   background: var(--bg-sunken);
 }
@@ -532,13 +550,68 @@ input, textarea { font-family: inherit; }
   color: var(--text);
   font-family: var(--font-mono);
 }
-.cal-cell-events {
+.cal-cell-points {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  flex: 1;
-  min-height: 0;
+  /* Reserve top space inside the cell for span bars (they sit at top via cal-week-spans positioning). */
+  margin-top: 0;
 }
+/* Spans: positioned absolutely over the week's cells. Each lane is a row of bars. */
+.cal-week-spans {
+  position: absolute;
+  top: 24px; /* below the day-number row */
+  left: 0;
+  right: 0;
+  pointer-events: none; /* let cell drop-targets receive events */
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0 2px;
+  z-index: 2;
+}
+.cal-span-lane {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  pointer-events: none;
+}
+.cal-span-bar {
+  pointer-events: auto;
+  background: #888;
+  color: #fff;
+  font-size: 10.5px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  margin: 0 2px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: grab;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.12);
+  font-weight: 500;
+  letter-spacing: -0.005em;
+}
+.cal-span-bar:active { cursor: grabbing; }
+.cal-span-bar.continues-left {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  margin-left: 0;
+}
+.cal-span-bar.continues-right {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  margin-right: 0;
+}
+.cal-span-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Push cell content down so spans (which overlay) don't collide */
+.cal-week:has(.cal-week-spans .cal-span-lane:nth-child(1)) .cal-cell-points { padding-top: 22px; }
+.cal-week:has(.cal-week-spans .cal-span-lane:nth-child(2)) .cal-cell-points { padding-top: 46px; }
+.cal-week:has(.cal-week-spans .cal-span-lane:nth-child(3)) .cal-cell-points { padding-top: 70px; }
+.cal-week:has(.cal-week-spans .cal-span-lane:nth-child(4)) .cal-cell-points { padding-top: 94px; }
+
 .cal-event-chip {
   display: flex;
   align-items: center;
@@ -795,11 +868,12 @@ input, textarea { font-family: inherit; }
 }
 .daily-quote {
   font-size: 13px;
-  color: var(--text-3);
+  color: var(--text);
   font-style: italic;
   letter-spacing: -0.005em;
   line-height: 1.5;
   max-width: 480px;
+  font-weight: 500;
 }
 
 .topbar-right {
@@ -1721,19 +1795,28 @@ input, textarea { font-family: inherit; }
 .add-item-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   margin-top: 6px;
+  flex-wrap: wrap;
+}
+.add-item-form {
+  flex: 1;
+  min-width: 220px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 6px;
   border-radius: 6px;
   border: 1px dashed var(--border-strong);
 }
-.add-item-row .input {
+.add-item-form .input {
   border: none;
   background: transparent;
   padding: 4px 6px;
   font-size: 13px;
+  flex: 1;
 }
-.add-item-row .input:focus { box-shadow: none; }
+.add-item-form .input:focus { box-shadow: none; }
 .add-item-btn {
   width: 22px; height: 22px;
   border-radius: 6px;
@@ -1743,6 +1826,57 @@ input, textarea { font-family: inherit; }
   font-size: 14px;
   display: grid;
   place-items: center;
+  cursor: pointer;
+}
+.item-quick-pick {
+  min-width: 220px;
+  max-width: 280px;
+  padding: 6px 30px 6px 10px;
+  font-size: 12.5px;
+}
+.item-bar-edit-select {
+  width: 100%;
+  padding: 6px 24px 6px 10px;
+  font-size: 13px;
+  background-color: var(--bg-elev);
+}
+
+/* Checklist header */
+.checklist-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.checklist-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* Drag handle on each item-bar */
+.item-drag-handle {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 100%;
+  color: var(--text-3);
+  cursor: grab;
+  font-size: 12px;
+  letter-spacing: -2px;
+  user-select: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  flex-shrink: 0;
+}
+.item-bar:hover .item-drag-handle { opacity: 1; }
+.item-drag-handle:active { cursor: grabbing; }
+.item-bar.reorder-target {
+  outline: 2px dashed rgba(16,185,129,0.55);
+  outline-offset: -2px;
 }
 
 /* progress in detail */
@@ -2878,7 +3012,8 @@ input, textarea { font-family: inherit; }
     grid-template-columns: 1fr;
     gap: 10px;
   }
-  .item-bar-date { width: 110px; font-size: 11px; }
+  .item-bar-date { width: 100px; font-size: 11px; }
+  .item-bar-dates { flex-wrap: wrap; }
 }
 
 /* Extra-tight phones (≤ 380px) — Galaxy S, smaller iPhones */
@@ -2909,7 +3044,7 @@ input, textarea { font-family: inherit; }
   z-index: 2;
   background: var(--bg-sunken);
   border-bottom: 1px solid var(--border);
-  height: 32px;
+  height: 48px;
   display: flex;
   align-items: stretch;
 }
@@ -2920,8 +3055,24 @@ input, textarea { font-family: inherit; }
 .gantt-month-tick {
   position: absolute;
   top: 0;
+  height: 24px;
+  border-left: 1.5px solid var(--border-strong);
+}
+.gantt-day-tick {
+  position: absolute;
+  top: 24px;
   bottom: 0;
   border-left: 1px solid var(--border);
+}
+.gantt-day-label {
+  position: absolute;
+  top: 50%;
+  left: 4px;
+  transform: translateY(-50%);
+  color: var(--text-3);
+  font-size: 9.5px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
 }
 .gantt-month-label {
   position: absolute;
@@ -3044,4 +3195,28 @@ input, textarea { font-family: inherit; }
   top: -4px;
   left: -10px;
   font-size: 14px;
+}
+
+/* Hover-only date popups at the bar endpoints */
+.gantt-date-popup {
+  position: absolute;
+  top: -22px;
+  background: rgba(20, 18, 12, 0.92);
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+  z-index: 10;
+}
+.gantt-date-popup-l { left: 0; }
+.gantt-date-popup-r { right: 0; }
+.gantt-bar:hover .gantt-date-popup { opacity: 1; }
+[data-theme="dark"] .gantt-date-popup {
+  background: rgba(243, 241, 237, 0.92);
+  color: #131210;
 }
