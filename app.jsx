@@ -49,6 +49,8 @@ const fmtChineseDate = (d) => {
 };
 // Default categories for extra-expense simulator. Users can add their own.
 const DEFAULT_EXPENSE_CATEGORIES = ['設備', '軟體授權', '投資', '員工福利', '教育訓練', '行銷宣傳', '場租', '物料耗材', '差旅', '維修保養', '雜支', '其他'];
+// Default outsource roles. Users can add their own via the "+ 新增角色" option.
+const DEFAULT_OUTSOURCE_ROLES = ['動畫師', '燈光師', '攝影師', '美術設計', '場景搭建', '偶頭外包', '配音員', '配樂', '音效後製', '剪輯', '後期調色', '特效合成', '編劇', '導演', '其他'];
 // Map legacy values ('equipment' / 'other') to the new label-as-value system.
 const normalizeExpenseType = (t) => {
   if (t === 'equipment') return '設備';
@@ -465,18 +467,18 @@ function StageBar({ variant, stages, selectedStageId, onClick, onCycle, onInsert
         };
         const segBody = variant === 'dots' ? (
           <button key={s.id} className={cls} data-stage-id={s.id} onClick={handleClick} title={`${s.label} — Shift+點擊切換狀態`}>
-            <div className="dot"><span className="emoji">{s.emoji}</span></div>
+            <div className="dot"><span className="bullet">•</span></div>
             <span className="seg-label">{s.label}</span>
           </button>
         ) : variant === 'blocks' ? (
           <button key={s.id} className={cls} data-stage-id={s.id} onClick={handleClick} title={`${s.label} — Shift+點擊切換狀態`}>
             <span className="status-pip"></span>
-            <span className="emoji">{s.emoji}</span>
+            <span className="bullet">•</span>
             <span className="seg-label">{s.label}</span>
           </button>
         ) : (
           <button key={s.id} className={cls} data-stage-id={s.id} onClick={handleClick} title={`${s.label} — Shift+點擊切換狀態`}>
-            <span className="emoji">{s.emoji}</span>
+            <span className="bullet">•</span>
             <span className="seg-label">{s.label}</span>
           </button>
         );
@@ -681,7 +683,7 @@ function StageDetail({ project, stageId, onClose, onUpdateStage, onDeleteStage, 
         <div style={{ minWidth: 0 }}>
           <div className="detail-eyebrow">{project.title} · 階段</div>
           <h3 className="detail-title">
-            <span className="emoji">{stage.emoji}</span>
+            <span className="bullet">•</span>
             {renaming ? (
               <input
                 className="input title-input"
@@ -835,13 +837,96 @@ function InfoPanel({ project, onUpdate }) {
   );
 }
 
+// ---------- Fixed-cost allocation ----------
+// Per-month "full absorption" model: each calendar month's full fixed expense
+// (settings.monthlyFixedExpense) MUST be absorbed by the projects active in that
+// month, even if those projects don't span the whole month. Within a month, the
+// burden is split among active projects proportional to each project's active
+// days in that month.
+//
+// Why month-based: the previous per-day algorithm under-absorbed fixed cost
+// whenever projects didn't fill every day of a month, leaving "orphan" cost
+// that distorted profit numbers. With this model, total absorbed across all
+// projects equals (months_with_any_project × monthly_fixed).
+//
+// Returns a Map<projectId, allocatedFixedCost (number)>.
+function computeFixedCostAllocations(projects, monthlyFixedExpense) {
+  const out = {};
+  const monthly = Number(monthlyFixedExpense) || 0;
+  // Include all non-deleted projects (active + archived); archived projects
+  // consumed their share when they were running, so they affect concurrent
+  // overlap with currently-active projects.
+  const valid = (projects || []).filter(p => !p.deleted && p.start && p.due);
+  for (const p of valid) out[p.id] = 0;
+  if (monthly === 0 || valid.length === 0) return out;
+
+  // Collect every (year, month) where at least one project is active.
+  const monthSet = new Set();
+  for (const p of valid) {
+    const s = new Date(p.start);
+    const e = new Date(p.due);
+    if (isNaN(s) || isNaN(e) || s > e) continue;
+    const cursor = new Date(s.getFullYear(), s.getMonth(), 1);
+    const stop = new Date(e.getFullYear(), e.getMonth(), 1);
+    while (cursor <= stop) {
+      monthSet.add(`${cursor.getFullYear()}-${cursor.getMonth()}`);
+      cursor.setMonth(cursor.getMonth() + 1);
+    }
+  }
+
+  for (const monthKey of monthSet) {
+    const [yearStr, monthStr] = monthKey.split('-');
+    const year = Number(yearStr);
+    const month = Number(monthStr);
+    const monthStart = new Date(year, month, 1);
+    monthStart.setHours(0, 0, 0, 0);
+    const monthEnd = new Date(year, month + 1, 0); // last day of month
+    monthEnd.setHours(0, 0, 0, 0);
+
+    const daysPerProject = {};
+    let totalDays = 0;
+    for (const p of valid) {
+      const ps = new Date(p.start); ps.setHours(0, 0, 0, 0);
+      const pe = new Date(p.due);   pe.setHours(0, 0, 0, 0);
+      // Clamp to this month
+      const segStart = ps > monthStart ? ps : monthStart;
+      const segEnd   = pe < monthEnd   ? pe : monthEnd;
+      if (segStart > segEnd) continue; // no overlap with this month
+      const days = Math.round((segEnd - segStart) / 86400000) + 1; // inclusive
+      daysPerProject[p.id] = days;
+      totalDays += days;
+    }
+    if (totalDays === 0) continue;
+
+    // Spread the full month's fixed expense across active projects in proportion
+    // to each project's days in this month.
+    for (const pId of Object.keys(daysPerProject)) {
+      out[pId] += monthly * daysPerProject[pId] / totalDays;
+    }
+  }
+  return out;
+}
+
 // ---------- Cost Panel ----------
-function calcCosts(project) {
+// fixedCostOverride: optional. When given (from computeFixedCostAllocations), use
+// it as the project's allocated fixed cost. When omitted, fall back to the
+// legacy per-project fixedMonthly * months calc (for projects that pre-date the
+// global setting).
+function calcCosts(project, fixedCostOverride, monthlyFixedExpenseGlobal) {
   const start = project.start ? new Date(project.start) : null;
   const due = project.due ? new Date(project.due) : null;
   const days = (start && due && !isNaN(start) && !isNaN(due)) ? Math.max(1, daysBetween(start, due)) : 0;
   const months = days / 30;
-  const fixedCost = (project.fixedMonthly || 0) * months;
+
+  let fixedCost;
+  if (typeof fixedCostOverride === 'number') {
+    fixedCost = fixedCostOverride;
+  } else {
+    const fallbackMonthly = (typeof monthlyFixedExpenseGlobal === 'number' && monthlyFixedExpenseGlobal > 0)
+      ? monthlyFixedExpenseGlobal
+      : (project.fixedMonthly || 0);
+    fixedCost = fallbackMonthly * months;
+  }
 
   let outsourceTotal = 0;
   let creditableInputTax = 0;
@@ -1004,7 +1089,7 @@ function buildCalendarEvents(projects) {
         kind: 'stage-start',
         projectId: p.id,
         projectTitle: p.title,
-        label: `${s.emoji || ''} ${s.label} 開始`.trim(),
+        label: `${s.label} 開始`,
         stageId: s.id,
       });
       if (s.end) events.push({
@@ -1012,7 +1097,7 @@ function buildCalendarEvents(projects) {
         kind: 'stage-end',
         projectId: p.id,
         projectTitle: p.title,
-        label: `${s.emoji || ''} ${s.label} 結束`.trim(),
+        label: `${s.label} 結束`,
         stageId: s.id,
       });
       // Item due dates
@@ -1128,8 +1213,11 @@ function buildExportData(allProjects, settings) {
   const stageStatusZH = { todo: '未開始', active: '進行中', done: '已完成' };
   const itemStatusZH = { todo: '未開始', active: '進行中', blocked: '卡關', done: '完成', confirmed: '已確認' };
 
+  const monthlyFixed = Number(settings?.monthlyFixedExpense) || 0;
+  const allocations = computeFixedCostAllocations(allProjects, monthlyFixed);
+
   const projectToExport = (p) => {
-    const c = calcCosts(p);
+    const c = calcCosts(p, allocations[p.id], monthlyFixed);
     const payments = getPayments(p);
     const totalItems = p.stages.reduce((a, s) => a + s.items.length, 0);
     const doneItems  = p.stages.reduce((a, s) => a + s.items.filter(it => {
@@ -1157,7 +1245,6 @@ function buildExportData(allProjects, settings) {
       "其中個人外包": c.personalOutsource,
       "可抵扣進項稅": c.creditableInputTax,
       "分攤成本": Math.round(c.fixedCost),
-      "每月固定支出_專案內設定": p.fixedMonthly || 0,
       "預估淨利": Math.round(c.profit),
       "淨利率": (p.budget ? Math.round(c.profit / p.budget * 100) : 0) + '%',
       "進度": pct + '%',
@@ -1237,10 +1324,11 @@ function buildExportData(allProjects, settings) {
   };
 
   const activeBudgetTotal = active.reduce((a, p) => a + (Number(p.budget) || 0), 0);
-  const activeProfitTotal = active.reduce((a, p) => a + calcCosts(p).profit, 0);
+  const activeProfitTotal = active.reduce((a, p) => a + calcCosts(p, allocations[p.id], monthlyFixed).profit, 0);
+  const activeFixedTotal  = active.reduce((a, p) => a + (allocations[p.id] || 0), 0);
 
   return {
-    "_說明": "這份檔案是 jt745 進度追蹤器在某時刻的快照，給 Claude 用來討論財務 / 專案決策。",
+    "_說明": "這份檔案是 jt745 進度追蹤器在某時刻的快照，給 Claude 用來討論財務 / 專案決策。固定成本採『按月分攤』：每個月的全域固定支出由當月活躍的所有非刪除專案按各案在當月的天數比例分擔；當月只有一案時，該案吸收當月全額。",
     "匯出時間": new Date().toISOString(),
     "今日日期": today,
     "全域設定": hasSettings ? {
@@ -1252,6 +1340,7 @@ function buildExportData(allProjects, settings) {
     "進行中專案總覽": {
       "案件數": active.length,
       "合約金額合計_含稅": activeBudgetTotal,
+      "分攤成本合計": Math.round(activeFixedTotal),
       "預估淨利合計": Math.round(activeProfitTotal),
     },
     "現金流量預估_未來12個月": cashflowSummary,
@@ -1279,8 +1368,7 @@ function PaymentSchedule({ project, onUpdate }) {
   const budget = Number(project.budget) || 0;
   const totalPct = payments.reduce((a, p) => a + (Number(p.percentage) || 0), 0);
 
-  // When changing one row's percentage, auto-balance the OTHER single row so total stays 100.
-  // (Only auto-balances for exactly 2 rows — the common 頭期/尾款 case.)
+  // When changing one row's percentage, auto-balance the OTHERS so total stays 100.
   const setPercentage = (id, raw) => {
     let pct = Number(raw);
     if (!Number.isFinite(pct)) pct = 0;
@@ -1296,23 +1384,57 @@ function PaymentSchedule({ project, onUpdate }) {
     onUpdate({ ...project, payments: next });
   };
 
+  // When the LAST payment (尾款) date changes, preserve the offset to the
+  // outsource pay date so users don't have to manually re-align it.
   const setDate = (id, dueDate) => {
     const next = payments.map(p => p.id === id ? { ...p, dueDate } : p);
-    onUpdate({ ...project, payments: next });
+    const patch = { payments: next };
+    const idx = payments.findIndex(p => p.id === id);
+    const oldFinal = payments[payments.length - 1];
+    if (idx === payments.length - 1 && oldFinal?.dueDate && dueDate) {
+      // Outsource date currently in effect (may be derived or explicit)
+      const currentOutsource = getOutsourcePayDate(project);
+      if (currentOutsource) {
+        const offset = daysBetween(new Date(oldFinal.dueDate), new Date(currentOutsource));
+        // Preserve offset (e.g. always "N days after 尾款")
+        patch.outsourcePayDate = addDays(dueDate, offset);
+      }
+    }
+    onUpdate({ ...project, ...patch });
   };
 
   const setOutsourcePayDate = (val) => {
     onUpdate({ ...project, outsourcePayDate: val });
   };
 
+  // Delete a payment row. Remaining row(s) get rescaled so total stays 100%.
+  // Common case: delete 頭款 → 尾款 becomes 100%.
+  const deletePayment = (id) => {
+    if (payments.length <= 1) return;
+    const remaining = payments.filter(p => p.id !== id).map(p => ({ ...p }));
+    const sumLeft = remaining.reduce((a, p) => a + (Number(p.percentage) || 0), 0);
+    if (sumLeft > 0) {
+      const factor = 100 / sumLeft;
+      remaining.forEach(p => { p.percentage = Math.round((Number(p.percentage) || 0) * factor); });
+      // Fix rounding drift so the total is exactly 100
+      const drift = 100 - remaining.reduce((a, p) => a + p.percentage, 0);
+      if (drift !== 0) remaining[0].percentage += drift;
+    } else {
+      remaining[0].percentage = 100;
+    }
+    onUpdate({ ...project, payments: remaining });
+  };
+
   const outsourcePayDate = getOutsourcePayDate(project);
   const hasOutsources = (project.outsources || []).length > 0;
+  const outsourceOffset = (outsourcePayDate && payments[payments.length - 1]?.dueDate)
+    ? daysBetween(new Date(payments[payments.length - 1].dueDate), new Date(outsourcePayDate))
+    : null;
 
   return (
     <div className="cost-section">
       <div className="cost-section-h">
         <div className="cost-block-h">
-          <span className="block-emoji">📅</span>
           <span>收款排程</span>
           <span className="ghost-pill">合計 {totalPct}%</span>
         </div>
@@ -1324,6 +1446,7 @@ function PaymentSchedule({ project, onUpdate }) {
           <div className="center">比例</div>
           <div>預計收款日</div>
           <div className="right">金額（含稅）</div>
+          <div></div>
         </div>
         {payments.map(p => (
           <div key={p.id} className="payment-row">
@@ -1339,6 +1462,9 @@ function PaymentSchedule({ project, onUpdate }) {
               value={p.dueDate || ''}
               onChange={e => setDate(p.id, e.target.value)} />
             <div className="num-val right">{fmtNT(budget * (Number(p.percentage) || 0) / 100)}</div>
+            {payments.length > 1 ? (
+              <button className="delete-item visible" onClick={() => deletePayment(p.id)} title="刪除這筆款項（剩餘的會自動補到 100%）">×</button>
+            ) : <div></div>}
           </div>
         ))}
       </div>
@@ -1349,16 +1475,36 @@ function PaymentSchedule({ project, onUpdate }) {
           <input type="date" className="date-input compact"
             value={outsourcePayDate}
             onChange={e => setOutsourcePayDate(e.target.value)} />
-          <span className="aux-hint">預設 = 尾款日 +5 天，可自行調整</span>
+          <span className="aux-hint">
+            {outsourceOffset == null
+              ? '尚未設定'
+              : outsourceOffset === 0 ? '＝ 尾款同一天'
+              : outsourceOffset > 0 ? `＝ 尾款入帳後 ${outsourceOffset} 天`
+              : `＝ 尾款前 ${Math.abs(outsourceOffset)} 天`}
+            {outsourceOffset !== 5 && payments[payments.length - 1]?.dueDate && (
+              <>
+                {' '}
+                <button
+                  className="link-btn-inline"
+                  onClick={() => setOutsourcePayDate(addDays(payments[payments.length - 1].dueDate, 5))}
+                  title="重設為「尾款入帳後 5 天」">↺ 改為 +5 天</button>
+              </>
+            )}
+            。改尾款日期時自動跟著移。
+          </span>
         </div>
       )}
     </div>
   );
 }
 
-function CostPanel({ project, onUpdate }) {
-  const c = useMemo(() => calcCosts(project), [project]);
+function CostPanel({ project, onUpdate, fixedCostShare, monthlyFixedExpense, onOpenCashSettings, outsourceRoles, customOutsourceRoles, onUpdateCustomOutsourceRoles }) {
+  const c = useMemo(
+    () => calcCosts(project, fixedCostShare, monthlyFixedExpense),
+    [project, fixedCostShare, monthlyFixedExpense]
+  );
   const update = (patch) => onUpdate({ ...project, ...patch });
+  const [detailsOpen, setDetailsOpen] = useState(true);
 
   const addOutsource = () => {
     update({ outsources: [...(project.outsources || []), { id: uid('o'), name: '', type: 'company', amount: 0, taxable: true }] });
@@ -1370,6 +1516,18 @@ function CostPanel({ project, onUpdate }) {
     update({ outsources: project.outsources.filter(o => o.id !== id) });
   };
 
+  const addCustomRole = () => {
+    const raw = window.prompt('新增外包角色名稱（之後在所有專案的下拉都會出現）：');
+    if (raw == null) return;
+    const name = raw.trim();
+    if (!name) return;
+    if ((outsourceRoles || []).includes(name)) {
+      alert(`角色「${name}」已經存在。`);
+      return;
+    }
+    onUpdateCustomOutsourceRoles && onUpdateCustomOutsourceRoles([...(customOutsourceRoles || []), name]);
+  };
+
   const profitPct = project.budget ? Math.round((c.profit / project.budget) * 100) : 0;
 
   return (
@@ -1377,7 +1535,7 @@ function CostPanel({ project, onUpdate }) {
       <div className="cost-header">
         <div>
           <div className="detail-eyebrow">{project.title} · 成本結構</div>
-          <h3 className="detail-title">💰 財務概覽</h3>
+          <h3 className="detail-title">財務概覽</h3>
         </div>
         <div className="cost-summary">
           <div className="summary-item">
@@ -1399,18 +1557,28 @@ function CostPanel({ project, onUpdate }) {
         </div>
       </div>
 
+      <div className="cost-details-toggle-row">
+        <button className="cost-details-toggle" onClick={() => setDetailsOpen(o => !o)} title={detailsOpen ? '收起明細，只看淨利' : '展開明細'}>
+          <span className="chevron">{detailsOpen ? '▾' : '▸'}</span>
+          <span>{detailsOpen ? '收起明細' : '展開明細'}</span>
+        </button>
+      </div>
+
+      {detailsOpen && (<>
       <div className="cost-grid">
         {/* Fixed cost */}
         <div className="cost-block">
           <div className="cost-block-h">
-            <span className="block-emoji">🏢</span>
             <span>公司固定成本</span>
           </div>
           <div className="cost-row-line">
-            <span>每月固定支出</span>
-            <MoneyInput
-              value={project.fixedMonthly || 0}
-              onChange={v => update({ fixedMonthly: v })} />
+            <span>每月固定支出（全域）</span>
+            <span className="num-val muted">
+              {fmtNT(monthlyFixedExpense || 0)}
+              {onOpenCashSettings && (
+                <button className="link-btn-inline" onClick={onOpenCashSettings} title="到全域現金流設定修改">改</button>
+              )}
+            </span>
           </div>
           <div className="cost-row-line">
             <span>專案起始</span>
@@ -1423,15 +1591,17 @@ function CostPanel({ project, onUpdate }) {
             <span className="num-val">{c.days} 天 ({c.months.toFixed(1)} 月)</span>
           </div>
           <div className="cost-row-line emphasis">
-            <span>分攤成本</span>
+            <span>實際分攤成本</span>
             <span className="num-val">{fmtNT(c.fixedCost)}</span>
+          </div>
+          <div className="cost-row-hint">
+            按月分攤：當月固定支出由當月活躍的所有專案，依各案在當月的天數比例分擔。當月只有一案時，該案吸收當月全額。
           </div>
         </div>
 
         {/* Tax */}
         <div className="cost-block">
           <div className="cost-block-h">
-            <span className="block-emoji">🧾</span>
             <span>稅務</span>
           </div>
           <div className="cost-row-line">
@@ -1476,17 +1646,21 @@ function CostPanel({ project, onUpdate }) {
       <div className="cost-section">
         <div className="cost-section-h">
           <div className="cost-block-h">
-            <span className="block-emoji">🤝</span>
             <span>外包支出</span>
             <span className="ghost-pill">公司 {fmtNT(c.companyOutsource)}</span>
             <span className="ghost-pill">個人 {fmtNT(c.personalOutsource)}</span>
           </div>
-          <button className="btn btn-ghost small" onClick={addOutsource}>+ 新增外包項目</button>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {onUpdateCustomOutsourceRoles && (
+              <button className="btn btn-ghost small" onClick={addCustomRole}>+ 新增角色</button>
+            )}
+            <button className="btn btn-ghost small" onClick={addOutsource}>+ 新增外包項目</button>
+          </div>
         </div>
 
         <div className="outsource-list">
           <div className="outsource-row head">
-            <div>項目名稱</div>
+            <div>角色 / 項目</div>
             <div>類型</div>
             <div>金額</div>
             <div className="center">可抵稅</div>
@@ -1495,35 +1669,56 @@ function CostPanel({ project, onUpdate }) {
           {(project.outsources || []).length === 0 && (
             <div className="empty-row">尚無外包支出。點上方按鈕新增。</div>
           )}
-          {(project.outsources || []).map(o => (
-            <div key={o.id} className="outsource-row">
-              <input className="input" placeholder="例：偶頭外包"
-                value={o.name}
-                onChange={e => updateOutsource(o.id, { name: e.target.value })} />
-              <div className="type-toggle">
-                <button className={o.type === 'company' ? 'on' : ''} onClick={() => updateOutsource(o.id, { type: 'company', taxable: true })}>公司</button>
-                <button className={o.type === 'personal' ? 'on' : ''} onClick={() => updateOutsource(o.id, { type: 'personal', taxable: false })}>個人</button>
-              </div>
-              <MoneyInput
-                value={o.amount}
-                onChange={v => updateOutsource(o.id, { amount: v })} />
-              <div className="center">
-                <div className={`check-box ${o.taxable ? 'checked' : ''} ${o.type === 'personal' ? 'disabled' : ''}`}
-                  onClick={() => { if (o.type === 'company') updateOutsource(o.id, { taxable: !o.taxable }); }}
-                  title={o.type === 'personal' ? '個人外包無法抵稅' : '可抵扣 5% 進項稅'}>
+          {(project.outsources || []).map(o => {
+            const rolesList = outsourceRoles || DEFAULT_OUTSOURCE_ROLES;
+            const showOrphan = o.name && !rolesList.includes(o.name);
+            const customs = customOutsourceRoles || [];
+            return (
+              <div key={o.id} className="outsource-row">
+                <select className="input select"
+                  value={o.name || ''}
+                  onChange={e => updateOutsource(o.id, { name: e.target.value })}>
+                  <option value="" disabled>選擇角色…</option>
+                  {showOrphan && <option value={o.name}>{o.name}</option>}
+                  {customs.length > 0 ? (
+                    <>
+                      <optgroup label="預設">
+                        {DEFAULT_OUTSOURCE_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                      </optgroup>
+                      <optgroup label="自訂">
+                        {customs.map(r => <option key={r} value={r}>{r}</option>)}
+                      </optgroup>
+                    </>
+                  ) : (
+                    DEFAULT_OUTSOURCE_ROLES.map(r => <option key={r} value={r}>{r}</option>)
+                  )}
+                </select>
+                <div className="type-toggle">
+                  <button className={o.type === 'company' ? 'on' : ''} onClick={() => updateOutsource(o.id, { type: 'company', taxable: true })}>公司</button>
+                  <button className={o.type === 'personal' ? 'on' : ''} onClick={() => updateOutsource(o.id, { type: 'personal', taxable: false })}>個人</button>
                 </div>
+                <MoneyInput
+                  value={o.amount}
+                  onChange={v => updateOutsource(o.id, { amount: v })} />
+                <div className="center">
+                  <div className={`check-box ${o.taxable ? 'checked' : ''} ${o.type === 'personal' ? 'disabled' : ''}`}
+                    onClick={() => { if (o.type === 'company') updateOutsource(o.id, { taxable: !o.taxable }); }}
+                    title={o.type === 'personal' ? '個人外包無法抵稅' : '可抵扣 5% 進項稅'}>
+                  </div>
+                </div>
+                <button className="delete-item visible" onClick={() => removeOutsource(o.id)} title="刪除">×</button>
               </div>
-              <button className="delete-item visible" onClick={() => removeOutsource(o.id)} title="刪除">×</button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
+      </>)}
     </div>
   );
 }
 
 // ---------- Project Card ----------
-function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycleStage, onCloseDetail, onUpdateStage, onDeleteStage, onInsertStage, onUpdateProject, onTogglePanel, onDeleteProject, onArchive, onRestore, onPurgeProject, density, stageVariant, dragHandleProps, dropTargetProps, isDragging, isOver, panelStyle }) {
+function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycleStage, onCloseDetail, onUpdateStage, onDeleteStage, onInsertStage, onUpdateProject, onTogglePanel, onDeleteProject, onArchive, onRestore, onPurgeProject, density, stageVariant, dragHandleProps, dropTargetProps, isDragging, isOver, panelStyle, fixedCostShare, monthlyFixedExpense, onOpenCashSettings, outsourceRoles, customOutsourceRoles, onUpdateCustomOutsourceRoles, isFocused, anyFocused }) {
   const due = new Date(project.due);
   const days = daysBetween(TODAY, due);
   const warn = days <= 14 && days >= 0;
@@ -1542,7 +1737,7 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
 
   return (
     <div
-      className={`card ${density === 'dense' ? 'dense' : ''} ${isDragging ? 'dragging' : ''} ${isOver ? 'drag-over' : ''} ${canArchive ? 'celebrate' : ''}`}
+      className={`card ${density === 'dense' ? 'dense' : ''} ${isDragging ? 'dragging' : ''} ${isOver ? 'drag-over' : ''} ${canArchive ? 'celebrate' : ''} ${isFocused ? 'focused' : ''} ${anyFocused && !isFocused ? 'dimmed' : ''}`}
       data-screen-label={project.title}
       data-project-id={project.id}
       {...dropTargetProps}
@@ -1649,7 +1844,16 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
       )}
 
       {project.costsOpen && (
-        <CostPanel project={project} onUpdate={(p) => onUpdateProject(project.id, p)} />
+        <CostPanel
+          project={project}
+          onUpdate={(p) => onUpdateProject(project.id, p)}
+          fixedCostShare={fixedCostShare}
+          monthlyFixedExpense={monthlyFixedExpense}
+          onOpenCashSettings={onOpenCashSettings}
+          outsourceRoles={outsourceRoles}
+          customOutsourceRoles={customOutsourceRoles}
+          onUpdateCustomOutsourceRoles={onUpdateCustomOutsourceRoles}
+        />
       )}
 
       {showEditModal && (
@@ -1752,7 +1956,7 @@ function CashflowSettingsModal({ settings, onClose, onSave }) {
   return (
     <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal">
-        <h2>💵 現金流設定</h2>
+        <h2>現金流設定</h2>
         <div className="modal-sub">這些數字會用來畫首頁的現金流量表</div>
         <form className="modal-form" onSubmit={submit}>
           <div className="field">
@@ -1926,10 +2130,25 @@ function ConfigMissingScreen() {
 function CashflowChart({ series }) {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
+  // Re-render the chart when the theme attribute on <html> changes so colours stay readable.
+  const [themeVersion, setThemeVersion] = useState(0);
+  useEffect(() => {
+    const obs = new MutationObserver(() => setThemeVersion(v => v + 1));
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    return () => obs.disconnect();
+  }, []);
 
   useEffect(() => {
     if (!window.Chart || !canvasRef.current) return;
     const ctx = canvasRef.current.getContext('2d');
+
+    // Read current theme colours from CSS variables so chart line / ticks / grid
+    // always read against the page background.
+    const styles = getComputedStyle(document.documentElement);
+    const textColor   = styles.getPropertyValue('--text').trim()   || '#1a1917';
+    const tickColor   = styles.getPropertyValue('--text-3').trim() || 'rgba(120,120,120,0.85)';
+    const gridColor   = styles.getPropertyValue('--border').trim() || 'rgba(0,0,0,0.06)';
+    const tooltipBg   = styles.getPropertyValue('--bg-elev').trim() || '#ffffff';
 
     const start = series.start;
     const dayOf = (d) => Math.round((d - start) / 86400000);
@@ -1953,7 +2172,7 @@ function CashflowChart({ series }) {
       if (kind === 'fixed') return '#ef4444';
       if (kind === 'outsource') return '#f59e0b';
       if (kind === 'extra') return '#8b5cf6';
-      return '#1a1917'; // start/end
+      return textColor; // start/end uses current text colour
     };
 
     if (chartRef.current) chartRef.current.destroy();
@@ -1964,7 +2183,7 @@ function CashflowChart({ series }) {
         datasets: [{
           label: '銀行餘額',
           data,
-          borderColor: '#1a1917',
+          borderColor: textColor,
           // Warm yellow fill under the line — gives the chart a visible "filled area"
           backgroundColor: 'rgba(251, 191, 36, 0.28)',
           borderWidth: 2.5,
@@ -2014,9 +2233,9 @@ function CashflowChart({ series }) {
               callback: (v) => fmtDayOffset(v),
               maxTicksLimit: 8,
               font: { size: 11 },
-              color: 'rgba(120,120,120,0.85)',
+              color: tickColor,
             },
-            grid: { color: 'rgba(0,0,0,0.04)' },
+            grid: { color: gridColor },
           },
           y: {
             min: 0,
@@ -2024,9 +2243,9 @@ function CashflowChart({ series }) {
             ticks: {
               callback: (v) => fmtNT(v),
               font: { size: 11 },
-              color: 'rgba(120,120,120,0.85)',
+              color: tickColor,
             },
-            grid: { color: 'rgba(0,0,0,0.04)' },
+            grid: { color: gridColor },
           },
         },
       },
@@ -2035,7 +2254,7 @@ function CashflowChart({ series }) {
     return () => {
       if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; }
     };
-  }, [series]);
+  }, [series, themeVersion]);
 
   return <canvas ref={canvasRef} />;
 }
@@ -2060,7 +2279,7 @@ function CashflowPanel({ series, hasSettings, onOpenSettings, defaultOpen = fals
       <div className="cashflow-head">
         <button className="cashflow-toggle" onClick={() => setOpen(o => !o)} title={open ? '收起' : '展開'}>
           <span className="cashflow-chevron">{open ? '▾' : '▸'}</span>
-          <span className="cashflow-title">📈 現金流量表</span>
+          <span className="cashflow-title">現金流量表</span>
           <span className="cashflow-sub">未來 12 個月 · 銀行餘額</span>
         </button>
         <div className="cashflow-actions">
@@ -2135,6 +2354,7 @@ function ExtraExpenseList({ series, expenses, customCategories, onChange, onUpda
   const list = expenses || [];
   const customs = customCategories || [];
   const allCategories = [...DEFAULT_EXPENSE_CATEGORIES, ...customs];
+  const [open, setOpen] = useState(true);
 
   const addEntry = () => {
     const item = {
@@ -2200,9 +2420,12 @@ function ExtraExpenseList({ series, expenses, customCategories, onChange, onUpda
 
   return (
     <section className="extra-expense-section">
-      {/* Title row: just the heading + totals (announcement-style) */}
-      <div className="page-section-header">
-        <h3 className="page-section-title">🛒 額外支出試算</h3>
+      {/* Title row: collapsible header + totals (announcement-style) */}
+      <div className="page-section-header collapsible">
+        <button className="section-collapse-btn" onClick={() => setOpen(o => !o)} title={open ? '收起' : '展開'}>
+          <span className="chevron">{open ? '▾' : '▸'}</span>
+          <h3 className="page-section-title">額外支出試算</h3>
+        </button>
         {list.length > 0 && (
           <div className="section-stats">
             <span className="cashflow-stat">已確認 <strong>{fmtNT(confirmedTotal)}</strong></span>
@@ -2211,7 +2434,8 @@ function ExtraExpenseList({ series, expenses, customCategories, onChange, onUpda
         )}
       </div>
 
-      {/* Runway banner: the “announcement” */}
+      {open && <>
+      {/* Runway banner: the "announcement" */}
       {runwayBanner}
 
       {/* Action buttons + hint live RIGHT ABOVE the list, so they're easy to find after adding rows */}
@@ -2279,6 +2503,7 @@ function ExtraExpenseList({ series, expenses, customCategories, onChange, onUpda
           })}
         </div>
       )}
+      </>}
     </section>
   );
 }
@@ -2725,7 +2950,7 @@ function GanttStageBar({ project, stage, color, dayOffset, onResize }) {
       title={`${stage.label}：${startISO} → ${endISO}（拖移整段、或拖左右邊緣調長度）`}
     >
       <div className="gantt-handle gantt-handle-l" onMouseDown={beginDrag('resize-l')} />
-      <span className="gantt-bar-label">{stage.emoji} {stage.label}</span>
+      <span className="gantt-bar-label">{stage.label}</span>
       <div className="gantt-handle gantt-handle-r" onMouseDown={beginDrag('resize-r')} />
     </div>
   );
@@ -2746,8 +2971,14 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
   );
   const [summaryOpen, setSummaryOpen] = useState(true);
 
+  const monthlyFixed = Number(settings?.monthlyFixedExpense) || 0;
+  const allocations = useMemo(
+    () => computeFixedCostAllocations(allProjects || projects, monthlyFixed),
+    [allProjects, projects, monthlyFixed]
+  );
+
   const rows = projects.map(p => {
-    const c = calcCosts(p);
+    const c = calcCosts(p, allocations[p.id], monthlyFixed);
     return {
       id: p.id,
       title: p.title,
@@ -2787,7 +3018,7 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
         <div className="page-section-header collapsible">
           <button className="section-collapse-btn" onClick={() => setSummaryOpen(o => !o)} title={summaryOpen ? '收起' : '展開'}>
             <span className="chevron">{summaryOpen ? '▾' : '▸'}</span>
-            <h3 className="page-section-title">📊 跨專案財務摘要</h3>
+            <h3 className="page-section-title">跨專案財務摘要</h3>
           </button>
           {!summaryOpen && rows.length > 0 && (
             <span className="cashflow-stat">合計淨利 <strong className={totals.profit < 0 ? 'neg' : ''}>{fmtNT(totals.profit)}</strong></span>
@@ -2918,6 +3149,12 @@ function Tracker({ session, onSignOut }) {
     saveUserSettings(next);
   };
 
+  const onUpdateCustomOutsourceRoles = (nextList) => {
+    const next = { ...(globalSettings || {}), customOutsourceRoles: nextList };
+    setGlobalSettings(next);
+    saveUserSettings(next);
+  };
+
   // Celebration: detect completion transitions between renders.
   // prevProjectsRef stays null until the first ready render, so we don't
   // fire confetti for projects that loaded already-completed from the DB.
@@ -2984,13 +3221,20 @@ function Tracker({ session, onSignOut }) {
       if (e.key === 'Escape') {
         if (showNew) setShowNew(false);
         else if (expanded) setExpanded(null);
+        else if (focusedProjectId) {
+          // Close info/costs panel on the focused card
+          const p = projects.find(p => p.id === focusedProjectId);
+          if (p && (p.infoOpen || p.costsOpen)) {
+            onUpdateProject(focusedProjectId, { infoOpen: false, costsOpen: false });
+          }
+        }
       }
       if (!inField && (e.key === 'n' || e.key === 'N')) { e.preventDefault(); setShowNew(true); }
       if (!inField && (e.key === 'd' || e.key === 'D')) { e.preventDefault(); setTweak('darkMode', !t.darkMode); }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [showNew, expanded, t.darkMode]);
+  }, [showNew, expanded, t.darkMode, focusedProjectId, projects]);
 
   useEffect(() => { const id = setTimeout(() => setShowHint(false), 8000); return () => clearTimeout(id); }, []);
 
@@ -3180,12 +3424,29 @@ function Tracker({ session, onSignOut }) {
   const deletedProjects = projects.filter(p => p.deleted);
   const visible = tab === 'active' ? activeProjects : tab === 'archived' ? archivedProjects : deletedProjects;
 
+  // Focus mode: the ID of the currently "focused" project (one with open info/cost
+  // panel, or with an expanded stage). Other cards dim so the user can concentrate.
+  const focusedProjectId = useMemo(() => {
+    for (const p of projects) {
+      if (p.infoOpen || p.costsOpen) return p.id;
+    }
+    return expanded?.projectId || null;
+  }, [projects, expanded]);
+
+  // Compute global fixed-cost allocation across ALL non-deleted projects.
+  // Daily proportional split: concurrent projects share the daily fixed expense.
+  const monthlyFixedExpense = Number(globalSettings?.monthlyFixedExpense) || 0;
+  const fixedCostAllocations = useMemo(
+    () => computeFixedCostAllocations(projects, monthlyFixedExpense),
+    [projects, monthlyFixedExpense]
+  );
+
   const totalBudget = activeProjects.reduce((a, p) => a + p.budget, 0);
   const urgentCount = activeProjects.filter(p => {
     const d = daysBetween(TODAY, new Date(p.due));
     return d >= 0 && d <= 14;
   }).length;
-  const totalProfit = activeProjects.reduce((a, p) => a + calcCosts(p).profit, 0);
+  const totalProfit = activeProjects.reduce((a, p) => a + calcCosts(p, fixedCostAllocations[p.id], monthlyFixedExpense).profit, 0);
 
   const expandedProj = expanded ? projects.find(p => p.id === expanded.projectId) : null;
 
@@ -3223,6 +3484,19 @@ function Tracker({ session, onSignOut }) {
           </button>
         </div>
       </header>
+
+      {focusedProjectId && (
+        <div
+          className="focus-backdrop"
+          onClick={() => {
+            const p = projects.find(p => p.id === focusedProjectId);
+            if (p && (p.infoOpen || p.costsOpen)) {
+              onUpdateProject(focusedProjectId, { infoOpen: false, costsOpen: false });
+            }
+            if (expanded) setExpanded(null);
+          }}
+        />
+      )}
 
       <div className="app-body">
         <Sidebar
@@ -3293,6 +3567,14 @@ function Tracker({ session, onSignOut }) {
                       onUpdateProject={onUpdateProject}
                       onTogglePanel={onTogglePanel}
                       onDeleteProject={onDeleteProject}
+                      fixedCostShare={fixedCostAllocations[p.id]}
+                      monthlyFixedExpense={monthlyFixedExpense}
+                      onOpenCashSettings={() => setShowCashSettings(true)}
+                      outsourceRoles={[...DEFAULT_OUTSOURCE_ROLES, ...((globalSettings?.customOutsourceRoles) || [])]}
+                      customOutsourceRoles={globalSettings?.customOutsourceRoles || []}
+                      onUpdateCustomOutsourceRoles={onUpdateCustomOutsourceRoles}
+                      isFocused={focusedProjectId === p.id}
+                      anyFocused={!!focusedProjectId}
                       onRestore={onRestoreProject}
                       onPurgeProject={onPurgeProject}
                       onArchive={tab === 'active' ? onArchive : onUnarchive}

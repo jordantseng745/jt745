@@ -453,7 +453,7 @@ input, textarea { font-family: inherit; }
   position: fixed;
   inset: 0;
   z-index: 200;
-  background: var(--bg-base, #faf9f7);
+  background: var(--bg);
   overflow: auto;
   padding: 24px;
 }
@@ -1381,6 +1381,21 @@ input, textarea { font-family: inherit; }
   margin: 0;
 }
 .detail-title .emoji { margin-right: 8px; }
+/* Bullet replaces stage emoji — small dot, matches text colour */
+.bullet {
+  display: inline-block;
+  color: var(--text-3);
+  font-size: 14px;
+  line-height: 1;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.detail-title .bullet { margin-right: 8px; font-size: 18px; }
+.stage-bar.variant-bar .segment .bullet { font-size: 13px; flex-shrink: 0; }
+.stage-bar.variant-blocks .segment .bullet { font-size: 16px; }
+.stage-bar.variant-dots .segment.status-done .dot .bullet { opacity: 0; }
+.segment.status-active .bullet,
+.segment.selected .bullet { color: currentColor; }
 .close-btn {
   width: 32px;
   height: 32px;
@@ -1701,6 +1716,7 @@ input, textarea { font-family: inherit; }
   transition: opacity 0.12s ease, color 0.12s ease;
 }
 .delete-item:hover { color: var(--warn); }
+.delete-item.visible { opacity: 1; color: var(--text-3); }
 
 .add-item-row {
   display: flex;
@@ -2123,6 +2139,87 @@ input, textarea { font-family: inherit; }
   font-size: 13px;
   color: var(--text-2);
   padding: 4px 0;
+}
+.cost-row-line .num-val.muted {
+  color: var(--text-3);
+  font-weight: 400;
+}
+.link-btn-inline {
+  background: none;
+  border: none;
+  padding: 0 0 0 6px;
+  color: var(--text-2);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11.5px;
+}
+.link-btn-inline:hover { color: var(--text); }
+/* Toggle row to collapse all detail sections inside CostPanel */
+.cost-details-toggle-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 14px;
+}
+.cost-details-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+  font: inherit;
+  transition: all 0.12s ease;
+}
+.cost-details-toggle:hover { background: var(--bg-sunken); color: var(--text); }
+.cost-details-toggle .chevron {
+  font-size: 11px;
+  color: var(--text-3);
+  width: 12px;
+  display: inline-block;
+  text-align: center;
+}
+
+/* Focus mode: dark backdrop covers everything except the focused card */
+.focus-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 8, 5, 0.65);
+  z-index: 90;
+  cursor: pointer;
+  animation: focus-backdrop-in 0.18s ease;
+}
+[data-theme="dark"] .focus-backdrop {
+  background: rgba(0, 0, 0, 0.72);
+}
+@keyframes focus-backdrop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.card.focused {
+  position: relative;
+  z-index: 91;
+  box-shadow: var(--shadow-lg);
+}
+/* `dimmed` retained for backward compat but is now visually invisible because the
+   backdrop sits above all non-focused cards. We leave the class intact so any
+   stale render doesn't crash; the dimmer is purely the backdrop element above. */
+.card.dimmed {
+  pointer-events: none;
+}
+
+.cost-row-hint {
+  font-size: 11px;
+  color: var(--text-3);
+  font-style: italic;
+  line-height: 1.5;
+  margin-top: 6px;
+  padding: 6px 0;
+  border-top: 1px dashed var(--border);
 }
 .cost-row-line.emphasis {
   margin-top: 4px;
