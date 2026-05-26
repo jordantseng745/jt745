@@ -261,6 +261,53 @@ input, textarea { font-family: inherit; }
   margin-bottom: 12px;
   font-style: italic;
 }
+.extra-subheader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 4px 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  width: 100%;
+  text-align: left;
+  cursor: default;
+}
+.extra-subheader.collapsible {
+  cursor: pointer;
+  margin-top: 8px;
+  border-top: 1px dashed var(--border);
+  padding-top: 14px;
+}
+.extra-subheader.collapsible:hover {
+  color: var(--accent, var(--text));
+}
+.extra-subheader .chevron {
+  font-size: 11px;
+  color: var(--text-3);
+  width: 12px;
+}
+.extra-sub-title {
+  letter-spacing: 0.04em;
+}
+.extra-sub-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+  font-weight: 400;
+}
+.empty-state.small {
+  padding: 14px;
+  font-size: 12.5px;
+  color: var(--text-3);
+  text-align: center;
+  background: var(--bg-sunken);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  margin-bottom: 8px;
+}
 .extra-list {
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -2596,6 +2643,70 @@ input, textarea { font-family: inherit; }
   color: var(--warn, #ef4444);
   font-weight: 500;
 }
+/* 營業稅總覽表 */
+.vat-overview-section {
+  margin: 22px 0;
+}
+.vat-table-wrap {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  margin: 12px 0;
+}
+.vat-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.vat-table thead th {
+  background: var(--bg-sunken);
+  padding: 10px 14px;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+}
+.vat-table thead th.num {
+  text-align: right;
+}
+.vat-table tbody td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+.vat-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.vat-table tbody td.num {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
+}
+.vat-table tbody td.num.emphasis {
+  font-weight: 600;
+}
+.vat-table tbody td.num.warn {
+  color: var(--warn, #ef4444);
+}
+.vat-table tbody td.vat-period-label {
+  font-weight: 500;
+  letter-spacing: -0.005em;
+}
+.vat-table tbody td.vat-date {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.vat-table tbody tr:hover {
+  background: var(--bg-sunken);
+}
 .cashflow-body {
   padding: 14px 18px 18px;
 }
@@ -2603,6 +2714,33 @@ input, textarea { font-family: inherit; }
   position: relative;
   height: 320px;
   width: 100%;
+}
+.cashflow-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 14px;
+  padding: 0 4px;
+}
+.cashflow-tabs button {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-2);
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.cashflow-tabs button:hover {
+  background: var(--bg-elev);
+  color: var(--text);
+}
+.cashflow-tabs button.on {
+  background: var(--text);
+  color: var(--bg);
+  border-color: var(--text);
 }
 .cashflow-legend {
   display: flex;

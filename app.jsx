@@ -181,6 +181,26 @@ const getOutsourcePayDate = (project) => {
   if (!last?.dueDate) return '';
   return addDays(last.dueDate, 5);
 };
+// 雙月一期。一筆金流落在的「期」 + 該期繳稅日（下一期第一個月的 5 號）。
+//   5/15 → 5–6 月期，7/5 繳
+//   11/20 → 11–12 月期，隔年 1/5 繳
+const vatPeriodInfo = (d) => {
+  const date = (d instanceof Date) ? d : new Date(d);
+  if (isNaN(date)) return null;
+  const m = date.getMonth();
+  const y = date.getFullYear();
+  const periodIdx = Math.floor(m / 2);
+  let dueMonth = periodIdx * 2 + 2;
+  let dueYear = y;
+  if (dueMonth >= 12) { dueMonth -= 12; dueYear += 1; }
+  const dueDate = new Date(dueYear, dueMonth, 5);
+  const periodMonth1 = periodIdx * 2;
+  return {
+    key: `${y}-${periodIdx}`,
+    dueDate,
+    periodLabel: `${y} 年 ${periodMonth1 + 1}–${periodMonth1 + 2} 月`,
+  };
+};
 
 const makeStage = (tpl, statusOverride) => ({
   id: uid('s'),
@@ -1292,18 +1312,82 @@ function buildCashflowSeries(projects, settings, horizonMonths = 12) {
     });
   }
 
+  // ---- 應繳營業稅（雙月一期，下一期第一個月 5 號繳） ----
+  // 跨所有案合併：本期銷項稅 − 本期進項稅 = 本期應繳；抵不完的進項留底結轉到下一期。
+  // 海外案不收銷項稅，但其公司外包進項稅依然進入該期合併扣抵（國稅局看公司全體）。
+  const vatPeriods = new Map();
+  const ensureVatPeriod = (info) => {
+    if (!vatPeriods.has(info.key)) {
+      vatPeriods.set(info.key, { dueDate: info.dueDate, periodLabel: info.periodLabel, salesVAT: 0, inputVAT: 0 });
+    }
+    return vatPeriods.get(info.key);
+  };
+  for (const p of projects) {
+    if (p.deleted) continue;
+    const pBudget = Number(p.budget) || 0;
+    if (p.overseas !== true) {
+      for (const pay of getPayments(p)) {
+        if (!pay.dueDate) continue;
+        const d = new Date(pay.dueDate);
+        if (isNaN(d)) continue;
+        const amt = pBudget * (Number(pay.percentage) || 0) / 100;
+        if (amt <= 0) continue;
+        const info = vatPeriodInfo(d);
+        if (!info) continue;
+        ensureVatPeriod(info).salesVAT += amt * 0.05 / 1.05;
+      }
+    }
+    const outDateForVAT = getOutsourcePayDate(p);
+    if (outDateForVAT) {
+      const d = new Date(outDateForVAT);
+      if (!isNaN(d)) {
+        const taxableInput = (p.outsources || [])
+          .filter(o => o.taxable)
+          .reduce((sum, o) => sum + (Number(o.amount) || 0) * 0.05, 0);
+        if (taxableInput > 0) {
+          const info = vatPeriodInfo(d);
+          if (info) ensureVatPeriod(info).inputVAT += taxableInput;
+        }
+      }
+    }
+  }
+  const sortedVatPeriods = [...vatPeriods.values()].sort((a, b) => a.dueDate - b.dueDate);
+  let vatCarryover = 0;
+  const enrichedVatPeriods = [];
+  for (const period of sortedVatPeriods) {
+    const carryIn = vatCarryover;
+    const availableInput = period.inputVAT + carryIn;
+    const netVAT = Math.max(0, period.salesVAT - availableInput);
+    const carryOut = Math.max(0, availableInput - period.salesVAT);
+    vatCarryover = carryOut;
+    enrichedVatPeriods.push({ ...period, carryIn, netVAT, carryOut });
+    if (netVAT <= 0) continue;
+    if (period.dueDate < start || period.dueDate > end) continue;
+    events.push({
+      date: period.dueDate,
+      amount: -netVAT,
+      label: `${period.periodLabel} 應繳營業稅`,
+      kind: 'vat',
+    });
+  }
+
   events.sort((a, b) => a.date - b.date);
 
-  // Cumulative points; first point is the starting balance
+  // Cumulative points; first point is the starting balance.
+  // 同時累積「收入」「支出」兩條獨立 series，給多圖表 view 用。
   let running = balance;
-  const points = [{ date: new Date(start), balance: running, label: '起算日', amount: 0, kind: 'start' }];
+  let cumIncome = 0;
+  let cumExpense = 0;
+  const points = [{ date: new Date(start), balance: running, cumIncome: 0, cumExpense: 0, label: '起算日', amount: 0, kind: 'start' }];
   for (const e of events) {
     running += e.amount;
-    points.push({ date: e.date, balance: running, label: e.label, amount: e.amount, kind: e.kind });
+    if (e.amount >= 0) cumIncome += e.amount;
+    else cumExpense += -e.amount;
+    points.push({ date: e.date, balance: running, cumIncome, cumExpense, label: e.label, amount: e.amount, kind: e.kind });
   }
   // Add a synthetic point at the horizon end so the line extends to the right edge
   if (points[points.length - 1].date < end) {
-    points.push({ date: new Date(end), balance: running, label: '', amount: 0, kind: 'end' });
+    points.push({ date: new Date(end), balance: running, cumIncome, cumExpense, label: '', amount: 0, kind: 'end' });
   }
 
   const minBalance = Math.min(...points.map(p => p.balance));
@@ -1330,7 +1414,7 @@ function buildCashflowSeries(projects, settings, horizonMonths = 12) {
     else months[mi].expense += -e.amount;
   }
 
-  return { points, events, months, startBalance: balance, minBalance, goesNegative, negativeAt, start, end };
+  return { points, events, months, startBalance: balance, minBalance, goesNegative, negativeAt, start, end, vatPeriods: enrichedVatPeriods };
 }
 
 // ---------- Calendar event aggregator ----------
@@ -1565,7 +1649,7 @@ function buildExportData(allProjects, settings) {
       "其中公司外包": c.companyOutsource,
       "其中個人外包": c.personalOutsource,
       "可抵扣進項稅": c.creditableInputTax,
-      "分攤成本": Math.round(c.fixedCost),
+      "分攤固定成本": Math.round(c.fixedCost),
       "預估淨利": Math.round(c.profit),
       "淨利率": (p.budget ? Math.round(c.profit / p.budget * 100) : 0) + '%',
       "進度": pct + '%',
@@ -1661,7 +1745,7 @@ function buildExportData(allProjects, settings) {
     "進行中專案總覽": {
       "案件數": active.length,
       "合約金額合計_含稅": activeBudgetTotal,
-      "分攤成本合計": Math.round(activeFixedTotal),
+      "分攤固定成本合計": Math.round(activeFixedTotal),
       "預估淨利合計": Math.round(activeProfitTotal),
     },
     "現金流量預估_未來12個月": cashflowSummary,
@@ -1912,7 +1996,7 @@ function CostPanel({ project, onUpdate, fixedCostShare, monthlyFixedExpense, onO
             <span className="num-val">{c.days} 天 ({c.months.toFixed(1)} 月)</span>
           </div>
           <div className="cost-row-line emphasis">
-            <span>實際分攤成本</span>
+            <span>實際分攤固定成本</span>
             <span className="num-val">{fmtNT(c.fixedCost)}</span>
           </div>
           <div className="cost-row-hint">
@@ -1954,7 +2038,7 @@ function CostPanel({ project, onUpdate, fixedCostShare, monthlyFixedExpense, onO
                 <span>應繳營業稅</span>
                 <span className="num-val">{fmtNT(c.netVAT)}</span>
               </div>
-              <div className="tax-hint">合約金額為含稅價，稅額 = 含稅價 ÷ 1.05 × 5%。公司外包可抵進項稅，個人外包無發票不可抵。</div>
+              <div className="tax-hint">合約金額為含稅價，稅額 = 含稅價 ÷ 1.05 × 5%。公司外包可抵進項稅，個人外包無發票不可抵。<br/>此處顯示單案估算，<strong>公司實際繳稅</strong>會跨案合併（同期銷項減進項，含跨期留底結轉），以現金流量表為準。</div>
             </>
           )}
         </div>
@@ -2448,7 +2532,7 @@ function ConfigMissingScreen() {
 // ---------- Cash flow chart ----------
 // Bank balance over time: one line, sharp diagonals, color-coded event dots.
 // Line goes UP at income events, DOWN at expense events — naturally shows the cash water-level.
-function CashflowChart({ series }) {
+function CashflowChart({ series, viewMode = 'overview' }) {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
   // Re-render the chart when the theme attribute on <html> changes so colours stay readable.
@@ -2469,18 +2553,10 @@ function CashflowChart({ series }) {
     const textColor   = styles.getPropertyValue('--text').trim()   || '#1a1917';
     const tickColor   = styles.getPropertyValue('--text-3').trim() || 'rgba(120,120,120,0.85)';
     const gridColor   = styles.getPropertyValue('--border').trim() || 'rgba(0,0,0,0.06)';
-    const tooltipBg   = styles.getPropertyValue('--bg-elev').trim() || '#ffffff';
 
     const start = series.start;
     const dayOf = (d) => Math.round((d - start) / 86400000);
     const horizonDays = Math.round((series.end - start) / 86400000);
-
-    // Clip displayed balance at 0 (real value kept in meta for tooltip)
-    const data = series.points.map(p => ({
-      x: dayOf(p.date),
-      y: Math.max(0, p.balance),
-      meta: p,
-    }));
 
     const fmtDayOffset = (offset) => {
       const d = new Date(start);
@@ -2493,32 +2569,170 @@ function CashflowChart({ series }) {
       if (kind === 'fixed') return '#ef4444';
       if (kind === 'outsource') return '#f59e0b';
       if (kind === 'extra') return '#8b5cf6';
+      if (kind === 'vat') return '#92400e';
       return textColor; // start/end uses current text colour
+    };
+
+    // 把每日的「事件總額」+「事件清單」聚合，給 spike 圖用。
+    // 每個有事件的日子，畫成一個 spike：(day-0.4, 0) → (day, total) → (day+0.4, 0)
+    // 兩側 0 點，讓無事件的天保持平 0，視覺上像「脈衝」。
+    const buildSpikeData = (filterFn) => {
+      const byDay = new Map();
+      for (const e of series.events.filter(filterFn)) {
+        const dx = dayOf(e.date);
+        const abs = Math.abs(e.amount);
+        if (!byDay.has(dx)) byDay.set(dx, { total: 0, events: [], date: e.date });
+        const entry = byDay.get(dx);
+        entry.total += abs;
+        entry.events.push(e);
+      }
+      const sorted = [...byDay.entries()].sort(([a], [b]) => a - b);
+      const out = [{ x: 0, y: 0 }];
+      for (const [dx, info] of sorted) {
+        out.push({ x: dx - 0.4, y: 0 });
+        out.push({ x: dx, y: info.total, meta: { date: info.date, total: info.total, events: info.events, isSpike: true } });
+        out.push({ x: dx + 0.4, y: 0 });
+      }
+      out.push({ x: horizonDays, y: 0 });
+      return out;
+    };
+
+    const datasets = [];
+
+    if (viewMode === 'overview') {
+      // 總覽 = 原本的黃色餘額折線 + 黃 fill。乾淨、易讀。
+      const balanceData = series.points.map(p => ({ x: dayOf(p.date), y: Math.max(0, p.balance), meta: p }));
+      datasets.push({
+        label: '銀行餘額',
+        data: balanceData,
+        borderColor: '#eab308',
+        backgroundColor: 'rgba(251, 191, 36, 0.35)',
+        borderWidth: 2.5,
+        pointRadius: 0,
+        pointHoverRadius: 7,
+        pointHitRadius: 14,
+        pointBackgroundColor: balanceData.map(d => dotColor(d.meta.kind)),
+        pointBorderColor: '#ffffff',
+        pointBorderWidth: 1.5,
+        fill: 'origin',
+        tension: 0.15,
+      });
+    } else if (viewMode === 'income') {
+      // 收入 = 每天的收入事件總額（無事件那天 = 0），綠 spike + 綠 fill
+      const incomeSpike = buildSpikeData(e => e.amount > 0);
+      datasets.push({
+        label: '每日收入',
+        data: incomeSpike,
+        borderColor: '#10b981',
+        backgroundColor: 'rgba(16, 185, 129, 0.30)',
+        borderWidth: 2,
+        pointRadius: incomeSpike.map(p => (p.meta?.isSpike ? 4 : 0)),
+        pointHoverRadius: incomeSpike.map(p => (p.meta?.isSpike ? 7 : 0)),
+        pointHitRadius: incomeSpike.map(p => (p.meta?.isSpike ? 12 : 0)),
+        pointBackgroundColor: '#10b981',
+        pointBorderColor: '#ffffff',
+        pointBorderWidth: 1.5,
+        fill: 'origin',
+        tension: 0,
+      });
+    } else if (viewMode === 'expense') {
+      // 支出 = 每天的支出事件總額。每個 spike 整條線 + fill 用「該日主要支出類別」上色，
+      // 一眼分得出固定支出 / 外包 / 額外 / 營業稅。
+      const expenseSpike = buildSpikeData(e => e.amount < 0);
+      // 同日多種支出時，用「金額最大者」決定 spike 顏色
+      const dominantKind = (events) => {
+        if (!events?.length) return null;
+        let best = events[0];
+        for (const e of events) {
+          if (Math.abs(e.amount) > Math.abs(best.amount)) best = e;
+        }
+        return best.kind;
+      };
+      const kindFillColor = (kind) => {
+        if (kind === 'fixed')     return 'rgba(239, 68, 68, 0.30)';  // 紅
+        if (kind === 'outsource') return 'rgba(245, 158, 11, 0.30)'; // 橙
+        if (kind === 'extra')     return 'rgba(139, 92, 246, 0.30)'; // 紫
+        if (kind === 'vat')       return 'rgba(146, 64, 14, 0.30)';  // 棕
+        return 'rgba(239, 68, 68, 0.26)';
+      };
+      datasets.push({
+        label: '每日支出',
+        data: expenseSpike,
+        borderColor: '#ef4444',                       // 預設（會被 segment 覆寫）
+        backgroundColor: 'rgba(239, 68, 68, 0.26)',   // 預設（會被 segment 覆寫）
+        borderWidth: 2,
+        pointRadius: expenseSpike.map(p => (p.meta?.isSpike ? 4 : 0)),
+        pointHoverRadius: expenseSpike.map(p => (p.meta?.isSpike ? 7 : 0)),
+        pointHitRadius: expenseSpike.map(p => (p.meta?.isSpike ? 12 : 0)),
+        pointBackgroundColor: expenseSpike.map(p => {
+          if (!p.meta?.isSpike) return 'transparent';
+          return dotColor(dominantKind(p.meta.events));
+        }),
+        pointBorderColor: '#ffffff',
+        pointBorderWidth: 1.5,
+        fill: 'origin',
+        tension: 0,
+        segment: {
+          // 每段線顏色：spike 兩翼用該日主要類別色；spike 之間的水平 0 線隱藏
+          borderColor: (ctx) => {
+            const data = ctx.chart.data.datasets[ctx.datasetIndex].data;
+            const p0 = data[ctx.p0DataIndex];
+            const p1 = data[ctx.p1DataIndex];
+            if (p0.y === 0 && p1.y === 0) return 'rgba(0,0,0,0)';
+            const peak = p0.meta?.isSpike ? p0 : p1.meta?.isSpike ? p1 : null;
+            if (!peak) return '#ef4444';
+            return dotColor(dominantKind(peak.meta.events));
+          },
+          // 每段 fill 顏色：spike 內部填該類別淡色
+          backgroundColor: (ctx) => {
+            const data = ctx.chart.data.datasets[ctx.datasetIndex].data;
+            const p0 = data[ctx.p0DataIndex];
+            const p1 = data[ctx.p1DataIndex];
+            if (p0.y === 0 && p1.y === 0) return 'rgba(0,0,0,0)';
+            const peak = p0.meta?.isSpike ? p0 : p1.meta?.isSpike ? p1 : null;
+            if (!peak) return 'rgba(239, 68, 68, 0.26)';
+            return kindFillColor(dominantKind(peak.meta.events));
+          },
+        },
+      });
+    }
+
+    // 「今天」垂直紅虛線 plugin
+    const todayOffset = Math.round((TODAY - start) / 86400000);
+    const todayLinePlugin = {
+      id: 'todayLine',
+      afterDraw: (chart) => {
+        if (todayOffset < 0 || todayOffset > horizonDays) return;
+        const xScale = chart.scales.x;
+        const yScale = chart.scales.y;
+        if (!xScale || !yScale) return;
+        const xPos = xScale.getPixelForValue(todayOffset);
+        const c = chart.ctx;
+        c.save();
+        c.beginPath();
+        c.strokeStyle = '#ef4444';
+        c.lineWidth = 1.5;
+        c.setLineDash([5, 4]);
+        c.moveTo(xPos, yScale.top);
+        c.lineTo(xPos, yScale.bottom);
+        c.stroke();
+        c.restore();
+        // 「今天」標籤
+        c.save();
+        c.fillStyle = '#ef4444';
+        c.font = '11px Inter, "Noto Sans TC", sans-serif';
+        c.textBaseline = 'top';
+        c.fillText('今天', xPos + 5, yScale.top + 4);
+        c.restore();
+      },
     };
 
     if (chartRef.current) chartRef.current.destroy();
 
     chartRef.current = new window.Chart(ctx, {
       type: 'line',
-      data: {
-        datasets: [{
-          label: '銀行餘額',
-          data,
-          borderColor: textColor,
-          // Warm yellow fill under the line — gives the chart a visible "filled area"
-          backgroundColor: 'rgba(251, 191, 36, 0.28)',
-          borderWidth: 2.5,
-          // Hide all dots visually; reveal on hover so info is still accessible
-          pointRadius: 0,
-          pointHoverRadius: 7,
-          pointHitRadius: 14, // generous click target so hover is easy
-          pointBackgroundColor: data.map(d => dotColor(d.meta.kind)),
-          pointBorderColor: '#ffffff',
-          pointBorderWidth: 1.5,
-          fill: true,
-          tension: 0,
-        }],
-      },
+      data: { datasets },
+      plugins: [todayLinePlugin],
       options: {
         responsive: true,
         maintainAspectRatio: false,
@@ -2527,19 +2741,31 @@ function CashflowChart({ series }) {
         plugins: {
           legend: { display: false },
           tooltip: {
+            filter: (item) => item.raw && item.raw.meta != null,
             callbacks: {
-              title: (items) => items[0] ? fmtDayOffset(items[0].parsed.x) : '',
+              title: (items) => items[0] ? fmtDayOffset(Math.round(items[0].parsed.x)) : '',
               label: (item) => {
                 const meta = item.raw.meta;
-                const lines = [meta.label || ''];
-                if (meta.kind !== 'start' && meta.kind !== 'end') {
-                  const sign = meta.amount >= 0 ? '+' : '−';
-                  lines.push(`${sign}${fmtNT(Math.abs(meta.amount))}`);
+                const lines = [];
+                if (meta.isSpike) {
+                  // spike view (income/expense)：列出該日所有事件
+                  const isIncome = item.dataset.label === '每日收入';
+                  lines.push(`${isIncome ? '收入' : '支出'}合計 ${fmtNT(meta.total)}`);
+                  for (const ev of meta.events) {
+                    lines.push(`  · ${ev.label} ${fmtNT(Math.abs(ev.amount))}`);
+                  }
+                } else {
+                  // overview view：顯示餘額點
+                  lines.push(meta.label || '');
+                  if (meta.kind !== 'start' && meta.kind !== 'end') {
+                    const sign = meta.amount >= 0 ? '+' : '−';
+                    lines.push(`${sign}${fmtNT(Math.abs(meta.amount))}`);
+                  }
+                  const balStr = meta.balance < 0
+                    ? `${fmtNT(meta.balance)} ⚠ 見底`
+                    : fmtNT(meta.balance);
+                  lines.push(`餘額 ${balStr}`);
                 }
-                const balStr = meta.balance < 0
-                  ? `${fmtNT(meta.balance)} ⚠ 見底`
-                  : fmtNT(meta.balance);
-                lines.push(`餘額 ${balStr}`);
                 return lines;
               },
             },
@@ -2575,7 +2801,7 @@ function CashflowChart({ series }) {
     return () => {
       if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; }
     };
-  }, [series, themeVersion]);
+  }, [series, themeVersion, viewMode]);
 
   return <canvas ref={canvasRef} />;
 }
@@ -2588,12 +2814,18 @@ function CashflowLegend() {
       <span className="cf-legend-item"><span className="cf-dot" style={{ background: '#ef4444' }}></span>每月固定支出</span>
       <span className="cf-legend-item"><span className="cf-dot" style={{ background: '#f59e0b' }}></span>外包付款</span>
       <span className="cf-legend-item"><span className="cf-dot" style={{ background: '#8b5cf6' }}></span>額外支出（已確認）</span>
+      <span className="cf-legend-item"><span className="cf-dot" style={{ background: '#92400e' }}></span>應繳營業稅</span>
     </div>
   );
 }
 
 function CashflowPanel({ series, hasSettings, onOpenSettings, defaultOpen = false }) {
   const [open, setOpen] = useState(defaultOpen);
+  const [viewMode, setViewMode] = useState('overview');  // overview / income / expense
+
+  const tabSub = viewMode === 'income' ? '累積收入'
+              : viewMode === 'expense' ? '累積支出'
+              : '餘額 + 收入 + 支出';
 
   return (
     <div className={`cashflow-panel ${open ? 'open' : 'closed'}`}>
@@ -2601,7 +2833,7 @@ function CashflowPanel({ series, hasSettings, onOpenSettings, defaultOpen = fals
         <button className="cashflow-toggle" onClick={() => setOpen(o => !o)} title={open ? '收起' : '展開'}>
           <span className="cashflow-chevron">{open ? '▾' : '▸'}</span>
           <span className="cashflow-title">現金流量表</span>
-          <span className="cashflow-sub">未來 12 個月 · 銀行餘額</span>
+          <span className="cashflow-sub">未來 12 個月 · {tabSub}</span>
         </button>
         <div className="cashflow-actions">
           {hasSettings && series && (
@@ -2633,9 +2865,14 @@ function CashflowPanel({ series, hasSettings, onOpenSettings, defaultOpen = fals
             </div>
           ) : (
             <>
-              <CashflowLegend />
+              <div className="cashflow-tabs">
+                <button className={viewMode === 'overview' ? 'on' : ''} onClick={() => setViewMode('overview')}>總覽</button>
+                <button className={viewMode === 'income' ? 'on' : ''} onClick={() => setViewMode('income')}>收入</button>
+                <button className={viewMode === 'expense' ? 'on' : ''} onClick={() => setViewMode('expense')}>支出</button>
+              </div>
+              {(viewMode === 'overview' || viewMode === 'expense') && <CashflowLegend />}
               <div className="cashflow-canvas-wrap">
-                <CashflowChart series={series} />
+                <CashflowChart series={series} viewMode={viewMode} />
               </div>
             </>
           )}
@@ -2670,12 +2907,93 @@ function Sidebar({ currentPage, onChange, counts }) {
   );
 }
 
+// ---------- VAT (營業稅) overview ----------
+// 顯示 horizon 內每雙月期的銷項稅、進項稅、留底結轉、應繳。
+// 跨案合併（國稅局視角），跟單案財務面板的 netVAT 不一樣。
+function VatOverviewSection({ vatPeriods }) {
+  const [open, setOpen] = useState(true);
+  if (!vatPeriods || vatPeriods.length === 0) {
+    return (
+      <section className="vat-overview-section">
+        <div className="page-section-header">
+          <h3 className="page-section-title">營業稅總覽</h3>
+        </div>
+        <div className="empty-state small">
+          目前還沒有任何收款 / 公司外包資料，無法計算稅額。在專案內填好收款排程與外包後會自動出現。
+        </div>
+      </section>
+    );
+  }
+  const totalSales = vatPeriods.reduce((a, p) => a + p.salesVAT, 0);
+  const totalInput = vatPeriods.reduce((a, p) => a + p.inputVAT, 0);
+  const totalNet   = vatPeriods.reduce((a, p) => a + p.netVAT, 0);
+  const lastCarry  = vatPeriods.length > 0 ? vatPeriods[vatPeriods.length - 1].carryOut : 0;
+  return (
+    <section className="vat-overview-section">
+      <div className="page-section-header collapsible">
+        <button className="section-collapse-btn" onClick={() => setOpen(o => !o)} title={open ? '收起' : '展開'}>
+          <span className="chevron">{open ? '▾' : '▸'}</span>
+          <h3 className="page-section-title">營業稅總覽</h3>
+        </button>
+        <div className="section-stats">
+          <span className="cashflow-stat">銷項合計 <strong>{fmtNT(totalSales)}</strong></span>
+          <span className="cashflow-stat">進項合計 <strong>− {fmtNT(totalInput)}</strong></span>
+          <span className="cashflow-stat warn">應繳合計 <strong>{fmtNT(totalNet)}</strong></span>
+        </div>
+      </div>
+      {open && (
+        <>
+          <div className="section-hint">
+            台灣營業稅雙月一期。本期應繳 = 銷項稅 − 進項稅 − 上期留底。抵不完的進項自動結轉到下一期。
+          </div>
+          <div className="vat-table-wrap">
+            <table className="vat-table">
+              <thead>
+                <tr>
+                  <th>期別</th>
+                  <th className="num">銷項稅</th>
+                  <th className="num">進項稅</th>
+                  <th className="num">上期留底</th>
+                  <th className="num">本期應繳</th>
+                  <th className="num">本期留底</th>
+                  <th>繳稅日</th>
+                </tr>
+              </thead>
+              <tbody>
+                {vatPeriods.map(p => (
+                  <tr key={p.key}>
+                    <td className="vat-period-label">{p.periodLabel}</td>
+                    <td className="num">{p.salesVAT > 0 ? fmtNT(p.salesVAT) : '—'}</td>
+                    <td className="num">{p.inputVAT > 0 ? `− ${fmtNT(p.inputVAT)}` : '—'}</td>
+                    <td className="num">{p.carryIn > 0 ? `− ${fmtNT(p.carryIn)}` : '—'}</td>
+                    <td className={`num emphasis ${p.netVAT > 0 ? 'warn' : ''}`}>
+                      {p.netVAT > 0 ? fmtNT(p.netVAT) : '—'}
+                    </td>
+                    <td className="num">{p.carryOut > 0 ? fmtNT(p.carryOut) : '—'}</td>
+                    <td className="vat-date">{fmtDate(p.dueDate)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {lastCarry > 0 && (
+            <div className="section-hint">
+              最末期之後仍有 <strong>{fmtNT(lastCarry)}</strong> 進項留底未抵完，會結轉到 12 個月之後的下一期繼續扣抵。
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 // ---------- Extra expense list (planned outflow simulator) ----------
 function ExtraExpenseList({ series, expenses, customCategories, onChange, onUpdateCustomCategories }) {
   const list = expenses || [];
   const customs = customCategories || [];
   const allCategories = [...DEFAULT_EXPENSE_CATEGORIES, ...customs];
   const [open, setOpen] = useState(true);
+  const [paidOpen, setPaidOpen] = useState(false);  // 已付款區預設摺疊
 
   const addEntry = () => {
     const item = {
@@ -2774,8 +3092,47 @@ function ExtraExpenseList({ series, expenses, customCategories, onChange, onUpda
         <div className="empty-state">
           還沒有試算項目。例如想買 10 萬的相機，就在這裡加一筆，立刻看現金流的衝擊。
         </div>
-      ) : (
-        <div className="extra-list">
+      ) : (() => {
+        const drafts = list.filter(e => !e.confirmed);
+        const paids  = list.filter(e => e.confirmed);
+        const renderRow = (ex) => {
+          const currentType = normalizeExpenseType(ex.type);
+          const showOrphanOption = currentType && !allCategories.includes(currentType);
+          return (
+            <div key={ex.id} className={`extra-row ${ex.confirmed ? 'confirmed' : 'draft'}`}>
+              <input className="input" placeholder="例：Canon R5 相機"
+                value={ex.name}
+                onChange={e => updateEntry(ex.id, { name: e.target.value })} />
+              <select className="input select"
+                value={currentType}
+                onChange={e => updateEntry(ex.id, { type: e.target.value })}>
+                {showOrphanOption && <option value={currentType}>{currentType}</option>}
+                {DEFAULT_EXPENSE_CATEGORIES.map(c => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+                {customs.length > 0 && customs.map(c => (
+                  <option key={c} value={c}>{c}（自訂）</option>
+                ))}
+              </select>
+              <MoneyInput
+                value={ex.amount}
+                onChange={v => updateEntry(ex.id, { amount: v })} />
+              <input type="date" className="date-input compact"
+                value={ex.plannedDate || ''}
+                onChange={e => updateEntry(ex.id, { plannedDate: e.target.value })} />
+              <div className="center">
+                <button
+                  className={`confirm-btn ${ex.confirmed ? 'on' : ''}`}
+                  onClick={() => toggleConfirm(ex.id)}
+                  title={ex.confirmed ? '已加入現金流（按一下取消）' : '加入現金流'}>
+                  {ex.confirmed ? '✓ 已確認' : '確認付款'}
+                </button>
+              </div>
+              <button className="delete-item visible" onClick={() => deleteEntry(ex.id)} title="刪除">×</button>
+            </div>
+          );
+        };
+        const headRow = (
           <div className="extra-row head">
             <div>項目名稱</div>
             <div>類型</div>
@@ -2784,46 +3141,42 @@ function ExtraExpenseList({ series, expenses, customCategories, onChange, onUpda
             <div className="center">狀態</div>
             <div></div>
           </div>
-          {list.map(ex => {
-            const currentType = normalizeExpenseType(ex.type);
-            // If the saved type isn't in the available list (e.g. legacy or user deleted a custom), still show it as an option.
-            const showOrphanOption = currentType && !allCategories.includes(currentType);
-            return (
-              <div key={ex.id} className={`extra-row ${ex.confirmed ? 'confirmed' : 'draft'}`}>
-                <input className="input" placeholder="例：Canon R5 相機"
-                  value={ex.name}
-                  onChange={e => updateEntry(ex.id, { name: e.target.value })} />
-                <select className="input select"
-                  value={currentType}
-                  onChange={e => updateEntry(ex.id, { type: e.target.value })}>
-                  {showOrphanOption && <option value={currentType}>{currentType}</option>}
-                  {DEFAULT_EXPENSE_CATEGORIES.map(c => (
-                    <option key={c} value={c}>{c}</option>
-                  ))}
-                  {customs.length > 0 && customs.map(c => (
-                    <option key={c} value={c}>{c}（自訂）</option>
-                  ))}
-                </select>
-                <MoneyInput
-                  value={ex.amount}
-                  onChange={v => updateEntry(ex.id, { amount: v })} />
-                <input type="date" className="date-input compact"
-                  value={ex.plannedDate || ''}
-                  onChange={e => updateEntry(ex.id, { plannedDate: e.target.value })} />
-                <div className="center">
-                  <button
-                    className={`confirm-btn ${ex.confirmed ? 'on' : ''}`}
-                    onClick={() => toggleConfirm(ex.id)}
-                    title={ex.confirmed ? '已加入現金流（按一下取消）' : '加入現金流'}>
-                    {ex.confirmed ? '✓ 已確認' : '確認付款'}
-                  </button>
-                </div>
-                <button className="delete-item visible" onClick={() => deleteEntry(ex.id)} title="刪除">×</button>
+        );
+        return (
+          <>
+            {/* 試算中（未確認）— 永遠展開 */}
+            <div className="extra-subheader">
+              <span className="extra-sub-title">試算中</span>
+              <span className="extra-sub-count">{drafts.length} 筆 · {fmtNT(draftTotal)}</span>
+            </div>
+            {drafts.length > 0 ? (
+              <div className="extra-list">
+                {headRow}
+                {drafts.map(renderRow)}
               </div>
-            );
-          })}
-        </div>
-      )}
+            ) : (
+              <div className="empty-state small">沒有試算中的項目。按右上「+ 新增一筆」開始試算。</div>
+            )}
+
+            {/* 已付款（已確認）— 預設摺疊 */}
+            {paids.length > 0 && (
+              <>
+                <button className="extra-subheader collapsible" onClick={() => setPaidOpen(o => !o)}>
+                  <span className="chevron">{paidOpen ? '▾' : '▸'}</span>
+                  <span className="extra-sub-title">已付款</span>
+                  <span className="extra-sub-count">{paids.length} 筆 · {fmtNT(confirmedTotal)}</span>
+                </button>
+                {paidOpen && (
+                  <div className="extra-list">
+                    {headRow}
+                    {paids.map(renderRow)}
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        );
+      })()}
       </>}
     </section>
   );
@@ -3465,6 +3818,8 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
         defaultOpen={true}
       />
 
+      <VatOverviewSection vatPeriods={series?.vatPeriods} />
+
       <section className="finance-summary">
         <div className="page-section-header collapsible">
           <button className="section-collapse-btn" onClick={() => setSummaryOpen(o => !o)} title={summaryOpen ? '收起' : '展開'}>
@@ -3485,7 +3840,7 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
                 <div className="num">合約金額</div>
                 <div className="num">應繳營業稅</div>
                 <div className="num">外包總額</div>
-                <div className="num">分攤成本</div>
+                <div className="num">分攤固定成本</div>
                 <div className="num">淨利</div>
               </div>
               {rows.map(r => (
@@ -3497,7 +3852,7 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
                   <div className="num" data-label="合約金額">{fmtNT(r.budget)}</div>
                   <div className="num" data-label="應繳營業稅">{fmtNT(r.netVAT)}</div>
                   <div className="num" data-label="外包總額">{fmtNT(r.outsourceTotal)}</div>
-                  <div className="num" data-label="分攤成本">{fmtNT(r.fixedCost)}</div>
+                  <div className="num" data-label="分攤固定成本">{fmtNT(r.fixedCost)}</div>
                   <div className={`num strong ${r.profit < 0 ? 'neg' : ''}`} data-label="淨利">
                     {fmtNT(r.profit)} <span className="pct">{r.pct}%</span>
                   </div>
@@ -3508,7 +3863,7 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
                 <div className="num strong" data-label="合約金額">{fmtNT(totals.budget)}</div>
                 <div className="num" data-label="應繳營業稅">{fmtNT(totals.netVAT)}</div>
                 <div className="num" data-label="外包總額">{fmtNT(totals.outsourceTotal)}</div>
-                <div className="num" data-label="分攤成本">{fmtNT(totals.fixedCost)}</div>
+                <div className="num" data-label="分攤固定成本">{fmtNT(totals.fixedCost)}</div>
                 <div className={`num strong ${totals.profit < 0 ? 'neg' : ''}`} data-label="淨利">{fmtNT(totals.profit)}</div>
               </div>
             </div>
@@ -3870,6 +4225,23 @@ function Tracker({ session, onSignOut }) {
   };
   const onDragEnd = () => { setDragId(null); setDragOverId(null); };
 
+  // 依交件日排序：把進行中專案按交件日由近到遠重排，已歸檔/垃圾桶保持原順序。
+  // 沒填交件日的專案排到最後（避免它們搶到第一順位）。
+  const sortByDueDate = () => {
+    setProjects(prev => {
+      const actives = prev.filter(p => !p.archived && !p.deleted);
+      const others  = prev.filter(p =>  p.archived ||  p.deleted);
+      const sorted = [...actives].sort((a, b) => {
+        const da = a.due ? new Date(a.due).getTime() : Infinity;
+        const db = b.due ? new Date(b.due).getTime() : Infinity;
+        return da - db;
+      });
+      const next = [...sorted, ...others];
+      saveOrderInDB(next.map(p => p.id));
+      return next;
+    });
+  };
+
   const activeProjects = projects.filter(p => !p.archived && !p.deleted);
   const archivedProjects = projects.filter(p => p.archived && !p.deleted);
   const deletedProjects = projects.filter(p => p.deleted);
@@ -3981,6 +4353,14 @@ function Tracker({ session, onSignOut }) {
                   </div>
                 </div>
                 <div className="meta-strip">
+                  {tab === 'active' && activeProjects.length > 1 && (
+                    <>
+                      <button className="btn btn-ghost small sort-by-due-btn" onClick={sortByDueDate} title="依交件日由近到遠重新排列卡片">
+                        依交件日排序
+                      </button>
+                      <span className="sep">·</span>
+                    </>
+                  )}
                   <span>合計金額 <strong>{fmtNT(totalBudget)}</strong></span>
                   <span className="sep">·</span>
                   <span>預估淨利 <strong>{fmtNT(totalProfit)}</strong></span>
