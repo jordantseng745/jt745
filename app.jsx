@@ -539,13 +539,33 @@ async function saveUserSettings(settings) {
 const STAGE_BURST_COLORS    = ['#10b981', '#34d399', '#6ee7b7', '#a7f3d0', '#fbbf24'];
 const PROJECT_BURST_COLORS  = ['#10b981', '#34d399', '#fbbf24', '#eab308', '#fb7185', '#fda4af', '#fde68a', '#fef3c7'];
 
+// 單一項目的完成比例（0..1）：
+//   有子細項 → 已完成子細項數 / 全部子細項數
+//   無子細項 → 1（已完成）或 0（未完成）
+function itemProgress(it) {
+  if (it.children && it.children.length > 0) {
+    const doneCount = it.children.filter(c => {
+      const s = childStatus(c);
+      return s === 'done' || s === 'confirmed';
+    }).length;
+    return doneCount / it.children.length;
+  }
+  const st = itemStatus(it);
+  return (st === 'done' || st === 'confirmed') ? 1 : 0;
+}
+// 階段完成比例（0..1）：每個項目權重相等取平均。空階段 fallback 到 stage.status。
+function stageProgress(stage) {
+  if (!stage.items || stage.items.length === 0) {
+    return stage.status === 'done' ? 1 : 0;
+  }
+  const total = stage.items.reduce((a, it) => a + itemProgress(it), 0);
+  return total / stage.items.length;
+}
+// 專案完成比例（0..100 整數）：每個階段權重相等取平均。
 function projectPct(project) {
-  const total = project.stages.reduce((a, s) => a + s.items.length, 0);
-  const done  = project.stages.reduce((a, s) => a + s.items.filter(it => {
-    const st = itemStatus(it);
-    return st === 'done' || st === 'confirmed';
-  }).length, 0);
-  return total ? Math.round((done / total) * 100) : 0;
+  if (!project.stages || project.stages.length === 0) return 0;
+  const total = project.stages.reduce((a, s) => a + stageProgress(s), 0);
+  return Math.round((total / project.stages.length) * 100);
 }
 
 function celebrateStage(stageId) {
@@ -669,9 +689,33 @@ function InsertGap({ onInsert }) {
 const ITEM_STATES = ['todo', 'active', 'blocked', 'done', 'confirmed'];
 const ITEM_STATE_LABELS = { todo: '未開始', active: '進行中', blocked: '排除問題', done: '已完成', confirmed: '已確認' };
 
+// 子細項的狀態：簡單從 status / done 推
+function childStatus(c) {
+  if (c.status && ITEM_STATES.includes(c.status)) return c.status;
+  return c.done ? 'done' : 'todo';
+}
+// 項目狀態：有子細項時自動推導（不能手動覆蓋）；沒有時用本身的 status
 function itemStatus(it) {
+  if (it.children && it.children.length > 0) {
+    const sts = it.children.map(childStatus);
+    if (sts.every(s => s === 'confirmed')) return 'confirmed';
+    if (sts.every(s => s === 'done' || s === 'confirmed')) return 'done';
+    if (sts.some(s => s === 'blocked')) return 'blocked';
+    if (sts.some(s => s !== 'todo')) return 'active';
+    return 'todo';
+  }
   if (it.status && ITEM_STATES.includes(it.status)) return it.status;
   return it.done ? 'done' : 'todo';
+}
+// 統計子細項完成度（含 confirmed 算已完成）
+function childProgress(it) {
+  const cs = it.children || [];
+  if (cs.length === 0) return null;
+  const doneCount = cs.filter(c => {
+    const s = childStatus(c);
+    return s === 'done' || s === 'confirmed';
+  }).length;
+  return { done: doneCount, total: cs.length };
 }
 
 function ItemStatusDropdown({ value, onChange }) {
@@ -689,7 +733,7 @@ function ItemStatusDropdown({ value, onChange }) {
     <div className="item-status-dropdown" ref={ref}>
       <button className={`item-bar-badge status-${value}`} onClick={(e) => { e.stopPropagation(); setOpen(!open); }}>
         {ITEM_STATE_LABELS[value]}
-        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ marginLeft: 4 }}><path d="M2.5 4l2.5 2.5L7.5 4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ marginLeft: 6 }}><path d="M3 5l4 4 4-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
       </button>
       {open && (
         <div className="item-status-menu">
@@ -705,26 +749,199 @@ function ItemStatusDropdown({ value, onChange }) {
   );
 }
 
+// 子細項列：純勾選清單。一鍵切換完成 / 未完成（不再用五態下拉，避免每項點兩下）。
+function ChildBar({ child, onToggle, onRemove }) {
+  const isDone = ['done', 'confirmed'].includes(childStatus(child));
+  return (
+    <div className={`item-bar child ${isDone ? 'is-done' : ''}`}>
+      <button
+        className={`child-checkbox ${isDone ? 'checked' : ''}`}
+        onClick={onToggle}
+        title={isDone ? '點一下取消完成' : '點一下標記完成'}
+        type="button"
+      >
+        {isDone ? '✓' : ''}
+      </button>
+      <span className="item-bar-text">{child.text}</span>
+      <button className="item-bar-action danger" onClick={onRemove} title="刪除">×</button>
+    </div>
+  );
+}
+
+// 父項目底下的「+ 自訂子細項」表單
+function AddChildForm({ parentId, onAdd }) {
+  const [text, setText] = useState('');
+  return (
+    <form
+      className="add-child-form"
+      onSubmit={(e) => { e.preventDefault(); if (!text.trim()) return; onAdd(parentId, text); setText(''); }}
+    >
+      <input
+        className="input"
+        placeholder="+ 自訂子細項…"
+        value={text}
+        onChange={e => setText(e.target.value)}
+      />
+      <button type="submit" className="add-item-btn" aria-label="加入子細項">+</button>
+    </form>
+  );
+}
+
+// 父項目底下的「一鍵生成系列」表單
+function PerItemSeriesForm({ parentId, onGenerate }) {
+  const [open, setOpen] = useState(false);
+  const [prefix, setPrefix] = useState('Card ');
+  const [from, setFrom] = useState(1);
+  const [to, setTo] = useState(20);
+  const fromN = parseInt(from, 10);
+  const toN = parseInt(to, 10);
+  const count = (!isNaN(fromN) && !isNaN(toN) && toN >= fromN) ? (toN - fromN + 1) : 0;
+  return (
+    <div className="series-generator child-series">
+      <button className="series-toggle" type="button" onClick={() => setOpen(o => !o)}>
+        <span className="chevron">{open ? '▾' : '▸'}</span>
+        一鍵生成系列（例：Card 01–20）
+      </button>
+      {open && (
+        <div className="series-form">
+          <label>
+            <span className="series-label">前綴</span>
+            <input className="input" value={prefix} onChange={e => setPrefix(e.target.value)} placeholder="Card " />
+          </label>
+          <label>
+            <span className="series-label">從</span>
+            <input type="number" className="input" min="0" value={from} onChange={e => setFrom(e.target.value)} />
+          </label>
+          <label>
+            <span className="series-label">到</span>
+            <input type="number" className="input" min="0" value={to} onChange={e => setTo(e.target.value)} />
+          </label>
+          <button
+            type="button"
+            className="btn btn-primary small series-go"
+            disabled={count <= 0 || count > 100}
+            onClick={() => { onGenerate(parentId, prefix, from, to); setOpen(false); }}
+          >
+            生成 {count > 0 ? `${count} 項` : ''}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ChecklistEditor({ stage, onUpdate }) {
   const [draft, setDraft] = useState('');
   const inputRef = useRef(null);
   const [dragOverItemId, setDragOverItemId] = useState(null);
+  // 哪些項目是展開的（顯示子細項）。預設：有 children 的自動展開、沒 children 的收起。
+  // user 顯式 toggle 之後覆蓋預設行為。
+  const [itemExpand, setItemExpand] = useState({});
+  const isExpanded = (it) => {
+    if (it.id in itemExpand) return itemExpand[it.id];
+    return (it.children?.length ?? 0) > 0;
+  };
+  const toggleExpand = (id) => {
+    setItemExpand(prev => {
+      const it = stage.items.find(x => x.id === id);
+      if (!it) return prev;
+      const currentlyExpanded = id in prev ? prev[id] : (it.children?.length ?? 0) > 0;
+      return { ...prev, [id]: !currentlyExpanded };
+    });
+  };
 
   const setItemStatus = (id, newStatus) => {
     const items = stage.items.map(it => {
-      if (it.id !== id) return it;
-      return { ...it, status: newStatus, done: newStatus === 'done' || newStatus === 'confirmed' };
+      // top-level 匹配：有 children 的不能改（從 children 推導），其他正常改
+      if (it.id === id) {
+        if (it.children && it.children.length > 0) return it; // 父項目狀態不可手動改
+        return { ...it, status: newStatus, done: newStatus === 'done' || newStatus === 'confirmed' };
+      }
+      // 沒找到就看看 children 裡有沒有
+      if (it.children && it.children.length > 0) {
+        let found = false;
+        const newChildren = it.children.map(c => {
+          if (c.id !== id) return c;
+          found = true;
+          return { ...c, status: newStatus, done: newStatus === 'done' || newStatus === 'confirmed' };
+        });
+        if (found) return { ...it, children: newChildren };
+      }
+      return it;
     });
     let status = stage.status;
-    const allConfirmed = items.length > 0 && items.every(it => itemStatus(it) === 'confirmed');
+    // 階段自動完成的條件：所有項目都到「已完成」或「已確認」（放寬，因為子細項用勾選只能到 done）
+    const allDone = items.length > 0 && items.every(it => {
+      const s = itemStatus(it);
+      return s === 'done' || s === 'confirmed';
+    });
     const anyStarted = items.some(it => itemStatus(it) !== 'todo');
-    if (allConfirmed) status = 'done';
-    else if (status === 'done' && !allConfirmed) status = 'active';
+    if (allDone) status = 'done';
+    else if (status === 'done' && !allDone) status = 'active';
     else if (status === 'todo' && anyStarted) status = 'active';
     onUpdate({ ...stage, items, status });
   };
   const remove = (id) => {
-    onUpdate({ ...stage, items: stage.items.filter(it => it.id !== id) });
+    // 先試 top-level
+    const filtered = stage.items.filter(it => it.id !== id);
+    if (filtered.length !== stage.items.length) {
+      onUpdate({ ...stage, items: filtered });
+      return;
+    }
+    // 找 children
+    onUpdate({
+      ...stage,
+      items: stage.items.map(it => {
+        if (!it.children || it.children.length === 0) return it;
+        const newChildren = it.children.filter(c => c.id !== id);
+        return newChildren.length !== it.children.length ? { ...it, children: newChildren } : it;
+      })
+    });
+  };
+  // 新增子細項到指定父項目
+  const addChildToParent = (parentId, text) => {
+    const t = text.trim();
+    if (!t) return;
+    onUpdate({
+      ...stage,
+      items: stage.items.map(it => it.id === parentId
+        ? { ...it, children: [...(it.children || []), { id: uid('i'), text: t, done: false, status: 'todo', start: '', end: '' }] }
+        : it),
+    });
+  };
+  // 一鍵生成系列到指定父項目
+  const generateSeriesForParent = (parentId, prefix, from, to) => {
+    const fromN = parseInt(from, 10);
+    const toN = parseInt(to, 10);
+    if (isNaN(fromN) || isNaN(toN) || fromN < 0 || toN < fromN) {
+      alert('請填正確的起 / 迄數字（迄 ≥ 起 ≥ 0）。');
+      return;
+    }
+    const count = toN - fromN + 1;
+    if (count > 100) {
+      alert('一次最多生成 100 項。請分批產生。');
+      return;
+    }
+    const padDigits = String(toN).length;
+    const newKids = [];
+    for (let i = fromN; i <= toN; i++) {
+      newKids.push({
+        id: uid('i'),
+        text: `${prefix}${String(i).padStart(padDigits, '0')}`,
+        done: false,
+        status: 'todo',
+        start: '',
+        end: '',
+      });
+    }
+    onUpdate({
+      ...stage,
+      items: stage.items.map(it => it.id === parentId
+        ? { ...it, children: [...(it.children || []), ...newKids] }
+        : it),
+    });
+    // 自動展開該父項目
+    setItemExpand(prev => ({ ...prev, [parentId]: true }));
   };
   // Add either from the custom text input OR from a quick-pick (preset/alt) item
   const addItem = (text) => {
@@ -791,7 +1008,10 @@ function ChecklistEditor({ stage, onUpdate }) {
   return (
     <div className="detail-section" style={{ gridColumn: '1 / -1' }}>
       <div className="checklist-header">
-        <div className="section-label">工作項目</div>
+        <div className="section-label">
+          工作項目
+          <span className="stage-pct-badge">{Math.round(stageProgress(stage) * 100)}%</span>
+        </div>
         <div className="checklist-header-right">
           <button className="btn btn-ghost small" onClick={autoSort} title="把有日期的項目按起始日期排前面">↕ 按日期排序</button>
           <div className="stage-progress-mini">
@@ -806,10 +1026,13 @@ function ChecklistEditor({ stage, onUpdate }) {
       <div className="item-bars">
         {stage.items.map(it => {
           const st = itemStatus(it);
+          const hasChildren = (it.children?.length ?? 0) > 0;
+          const expanded = isExpanded(it);
+          const progress = childProgress(it);
           return (
+            <React.Fragment key={it.id}>
             <div
-              key={it.id}
-              className={`item-bar status-${st} ${dragOverItemId === it.id ? 'reorder-target' : ''}`}
+              className={`item-bar status-${st} ${dragOverItemId === it.id ? 'reorder-target' : ''} ${hasChildren ? 'is-parent' : ''}`}
               onDragOver={(e) => {
                 if (e.dataTransfer.types.includes('application/x-item-reorder')) {
                   e.preventDefault();
@@ -828,6 +1051,14 @@ function ChecklistEditor({ stage, onUpdate }) {
                 }}
                 title="拖曳調整順序"
               >⋮⋮</div>
+              <button
+                className={`item-bar-toggle ${hasChildren ? 'has-children' : 'empty'}`}
+                onClick={() => toggleExpand(it.id)}
+                title={hasChildren ? (expanded ? '收起子細項' : `展開 ${it.children.length} 個子細項`) : '展開以加入子細項'}
+                type="button"
+              >
+                {expanded ? '▾' : '▸'}
+              </button>
               <div className="item-bar-actions-left">
                 {it.link && <a href={it.link} target="_blank" rel="noopener noreferrer" className="item-bar-link" title={it.link}>↗</a>}
                 <button className="item-bar-action" title={it.link ? '編輯連結' : '加入連結'} onClick={() => {
@@ -837,15 +1068,15 @@ function ChecklistEditor({ stage, onUpdate }) {
                 }}>
                   <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M6 8a2.5 2.5 0 0 0 3.5 0l2-2a2.5 2.5 0 0 0-3.5-3.5L7 3.5M8 6a2.5 2.5 0 0 0-3.5 0l-2 2a2.5 2.5 0 0 0 3.5 3.5L7 10.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>
                 </button>
-                <button className="item-bar-action" onClick={() => {
-                  const items = stage.items.map(x => x.id === it.id ? { ...x, editing: true } : x);
+                <button className="item-bar-action item-preset-trigger" onClick={() => {
+                  const items = stage.items.map(x => x.id === it.id ? { ...x, editing: 'select' } : x);
                   onUpdate({ ...stage, items });
-                }} title="重新命名">
-                  <svg width="12" height="12" viewBox="0 0 14 14" fill="none"><path d="M10.5 2.5l1 1-7 7H3v-1.5l7-7z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                }} title="從預設項目選擇">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 5l4 4 4-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 </button>
                 <button className="item-bar-action danger" onClick={() => remove(it.id)} title="刪除">×</button>
               </div>
-              {it.editing ? (
+              {it.editing === 'select' ? (
                 <div className="item-bar-text-area">
                   <select
                     autoFocus
@@ -863,13 +1094,6 @@ function ChecklistEditor({ stage, onUpdate }) {
                         ...stage,
                         items: stage.items.map(x => x.id === it.id ? { ...x, editing: false } : x)
                       });
-                      if (v === '__custom__') {
-                        const custom = window.prompt('輸入自訂項目名稱：', it.text);
-                        const trimmed = (custom || '').trim();
-                        if (!trimmed) { cancel(); return; }
-                        finish(trimmed);
-                        return;
-                      }
                       if (v === it.text) { cancel(); return; }
                       finish(v);
                     }}
@@ -887,11 +1111,41 @@ function ChecklistEditor({ stage, onUpdate }) {
                         </optgroup>
                       ) : null;
                     })}
-                    <option value="__custom__">自訂…</option>
                   </select>
                 </div>
+              ) : it.editing === 'input' ? (
+                <input
+                  autoFocus
+                  type="text"
+                  className="input item-bar-edit-input"
+                  defaultValue={it.text}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') { e.target.blur(); }
+                    if (e.key === 'Escape') {
+                      onUpdate({ ...stage, items: stage.items.map(x => x.id === it.id ? { ...x, editing: false } : x) });
+                    }
+                  }}
+                  onBlur={(e) => {
+                    const v = e.target.value.trim();
+                    onUpdate({
+                      ...stage,
+                      items: stage.items.map(x => x.id === it.id
+                        ? { ...x, text: v || x.text, editing: false }
+                        : x)
+                    });
+                  }}
+                />
               ) : (
-                <span className="item-bar-text">{it.text}</span>
+                <span
+                  className="item-bar-text editable"
+                  onClick={() => {
+                    const items = stage.items.map(x => x.id === it.id ? { ...x, editing: 'input' } : x);
+                    onUpdate({ ...stage, items });
+                  }}
+                  title="點一下直接編輯文字"
+                >
+                  {it.text}
+                </span>
               )}
               <div className="item-bar-dates">
                 <input
@@ -910,8 +1164,32 @@ function ChecklistEditor({ stage, onUpdate }) {
                   onChange={e => onUpdate({ ...stage, items: stage.items.map(x => x.id === it.id ? { ...x, end: e.target.value, dueDate: '' } : x) })}
                 />
               </div>
-              <ItemStatusDropdown value={st} onChange={(newSt) => setItemStatus(it.id, newSt)} />
+              {hasChildren ? (
+                <span className={`item-bar-child-count status-${st}`} title={`${progress.done}/${progress.total} 已完成`}>
+                  {progress.done}/{progress.total}
+                </span>
+              ) : (
+                <ItemStatusDropdown value={st} onChange={(newSt) => setItemStatus(it.id, newSt)} />
+              )}
             </div>
+            {/* 展開時：子細項列表 + 加入子細項表單 + 一鍵生成系列 */}
+            {expanded && (
+              <div className="item-children-area">
+                {(it.children || []).map(c => (
+                  <ChildBar
+                    key={c.id}
+                    child={c}
+                    onToggle={() => setItemStatus(c.id, ['done','confirmed'].includes(childStatus(c)) ? 'todo' : 'done')}
+                    onRemove={() => remove(c.id)}
+                  />
+                ))}
+                <div className="item-children-add">
+                  <AddChildForm parentId={it.id} onAdd={addChildToParent} />
+                  <PerItemSeriesForm parentId={it.id} onGenerate={generateSeriesForParent} />
+                </div>
+              </div>
+            )}
+            </React.Fragment>
           );
         })}
       </div>
@@ -1624,12 +1902,7 @@ function buildExportData(allProjects, settings) {
   const projectToExport = (p) => {
     const c = calcCosts(p, allocations[p.id], monthlyFixed);
     const payments = getPayments(p);
-    const totalItems = p.stages.reduce((a, s) => a + s.items.length, 0);
-    const doneItems  = p.stages.reduce((a, s) => a + s.items.filter(it => {
-      const st = itemStatus(it);
-      return st === 'done' || st === 'confirmed';
-    }).length, 0);
-    const pct = totalItems ? Math.round((doneItems / totalItems) * 100) : 0;
+    const pct = projectPct(p);
     const currentStage = p.stages.find(s => s.status === 'active')
       || [...p.stages].reverse().find(s => s.status === 'done')
       || p.stages[0];
@@ -2130,10 +2403,11 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
 
   const [showEditModal, setShowEditModal] = useState(false);
 
-  const totalItems = project.stages.reduce((a, s) => a + s.items.length, 0);
-  const doneItems = project.stages.reduce((a, s) => a + s.items.filter(it => it.done).length, 0);
-  const pct = totalItems ? Math.round((doneItems / totalItems) * 100) : 0;
+  // 用全域的 projectPct（會處理子細項 + 階段等權重平均）。
+  const pct = projectPct(project);
   const canArchive = pct === 100;
+  const cardColor = colorById(project.color);
+  const [metaOpen, setMetaOpen] = useState(false);
 
   // current stage = first 'active', else last 'done', else first
   const currentStage = project.stages.find(s => s.status === 'active')
@@ -2142,14 +2416,12 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
 
   return (
     <div
-      className={`card ${density === 'dense' ? 'dense' : ''} ${isDragging ? 'dragging' : ''} ${isOver ? 'drag-over' : ''} ${canArchive ? 'celebrate' : ''} ${isFocused ? 'focused' : ''} ${anyFocused && !isFocused ? 'dimmed' : ''}`}
+      className={`card ${density === 'dense' ? 'dense' : ''} ${isDragging ? 'dragging' : ''} ${isOver ? 'drag-over' : ''} ${canArchive ? 'celebrate' : ''} ${isFocused ? 'focused' : ''} ${anyFocused && !isFocused ? 'dimmed' : ''} ${cardColor.hex ? 'has-color' : ''} ${metaOpen ? 'meta-open' : ''}`}
       data-screen-label={project.title}
       data-project-id={project.id}
+      style={cardColor.hex ? { '--card-color': cardColor.hex } : undefined}
       {...dropTargetProps}
     >
-      <div className="stage-tag-wrap" aria-hidden="false">
-        <div className="stage-tag">{currentStage.label}</div>
-      </div>
       <div className="card-actions-abs">
         {project.deleted ? (
           <>
@@ -2187,11 +2459,35 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
       <div className="card-row">
         <div className="drag-handle" title="拖曳排序" {...dragHandleProps}></div>
 
-        <div className="card-main">
-          <div className="card-header">
-            <div className="project-title">{project.title}</div>
-            <div className="client-name">{project.client}</div>
+        <div className="stage-tag">{currentStage.label}</div>
+
+        <div className="card-center">
+          <div className="project-title">{project.title}</div>
+          <div className="client-name centered">{project.client}</div>
+        </div>
+
+        <div className="card-right">
+          <div className={`countdown ${warn ? 'warn' : ''}`}>
+            <div className="countdown-num">
+              {days < 0 ? `+${Math.abs(days)}` : days}<span className="unit">{days < 0 ? '天逾期' : '天'}</span>
+            </div>
+            <div className="countdown-label">
+              <span className="due-date">{fmtDate(project.due)}</span>
+              <span className="due-sep">·</span>
+              <span>{warn ? '緊急' : '距交件'}</span>
+            </div>
           </div>
+          <CompletionRing pct={pct} />
+        </div>
+      </div>
+
+      {/* 詳細資訊摺疊區（移到 card-row 之外，避免擠進去）*/}
+      <div className="card-meta-row">
+        <button className="card-meta-toggle" type="button" onClick={() => setMetaOpen(o => !o)} title={metaOpen ? '收起詳細資訊' : '展開詳細資訊'}>
+          <span>詳細資訊</span>
+          <span className="chevron">{metaOpen ? '▾' : '▸'}</span>
+        </button>
+        {metaOpen && (
           <div className="card-meta">
             <div className="meta-item">
               <span className="meta-label">金額</span>
@@ -2208,21 +2504,7 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
               <span className="meta-value">{(project.outsources || []).length} 筆</span>
             </div>
           </div>
-        </div>
-
-        <div className="card-right">
-          <div className={`countdown ${warn ? 'warn' : ''}`}>
-            <div className="countdown-num">
-              {days < 0 ? `+${Math.abs(days)}` : days}<span className="unit">{days < 0 ? '天逾期' : '天'}</span>
-            </div>
-            <div className="countdown-label">
-              <span className="due-date">{fmtDate(project.due)}</span>
-              <span className="due-sep">·</span>
-              <span>{warn ? '緊急' : '距交件'}</span>
-            </div>
-          </div>
-          <CompletionRing pct={pct} />
-        </div>
+        )}
       </div>
 
       <StageBar
@@ -2272,6 +2554,19 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
   );
 }
 
+// MUJI 風暖灰色票（給卡片左邊條 + 編輯 modal 選色用）
+const PROJECT_COLORS = [
+  { id: 'none', name: '無',  hex: null,       label: '預設' },
+  { id: 'sand', name: '沙',  hex: '#d4a574',  label: '沙' },
+  { id: 'moss', name: '苔',  hex: '#84a59d',  label: '苔' },
+  { id: 'clay', name: '陶',  hex: '#b97e6f',  label: '陶' },
+  { id: 'mist', name: '霧',  hex: '#8eaab5',  label: '霧' },
+  { id: 'tea',  name: '茶',  hex: '#a8b67c',  label: '茶' },
+  { id: 'lotus',name: '藕',  hex: '#cba0a4',  label: '藕' },
+  { id: 'ink',  name: '墨',  hex: '#4a5568',  label: '墨' },
+];
+const colorById = (id) => PROJECT_COLORS.find(c => c.id === id) || PROJECT_COLORS[0];
+
 function EditProjectModal({ project, onClose, onSave }) {
   const [form, setForm] = useState({
     title: project.title || '',
@@ -2279,6 +2574,7 @@ function EditProjectModal({ project, onClose, onSave }) {
     budget: project.budget || '',
     start: project.start || '',
     due: project.due || '',
+    color: project.color || 'none',
   });
 
   const valid = form.title.trim() && form.client.trim() && form.budget && form.due;
@@ -2292,6 +2588,7 @@ function EditProjectModal({ project, onClose, onSave }) {
       budget: Number(form.budget),
       start: form.start,
       due: form.due,
+      color: form.color,
     });
   };
 
@@ -2322,6 +2619,23 @@ function EditProjectModal({ project, onClose, onSave }) {
           <div className="field">
             <label className="field-label">交件日期</label>
             <input className="date-input" type="date" value={form.due} onChange={e => setForm({ ...form, due: e.target.value })} />
+          </div>
+          <div className="field">
+            <label className="field-label">卡片色彩</label>
+            <div className="color-swatches">
+              {PROJECT_COLORS.map(c => (
+                <button
+                  key={c.id}
+                  type="button"
+                  className={`color-swatch ${form.color === c.id ? 'on' : ''} ${c.id === 'none' ? 'none' : ''}`}
+                  style={c.hex ? { background: c.hex } : undefined}
+                  onClick={() => setForm({ ...form, color: c.id })}
+                  title={c.label}
+                >
+                  {form.color === c.id && <span className="check">✓</span>}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="modal-actions">
             <button type="button" className="btn btn-ghost" onClick={onClose}>取消 (Esc)</button>
@@ -3917,6 +4231,7 @@ function Tracker({ session, onSignOut }) {
   const [globalSettings, setGlobalSettings] = useState(null); // null while loading
   const [showCashSettings, setShowCashSettings] = useState(false);
   const [currentPage, setCurrentPage] = useState('projects'); // 'projects' | 'finance'
+  const [sidebarOpen, setSidebarOpen] = useState(false); // 漢堡按鈕控制
 
   // Load projects from Supabase on mount
   useEffect(() => {
@@ -4321,10 +4636,21 @@ function Tracker({ session, onSignOut }) {
         />
       )}
 
-      <div className="app-body">
+      <button
+        className="sidebar-toggle"
+        onClick={() => setSidebarOpen(o => !o)}
+        title={sidebarOpen ? '關閉導覽' : '開啟導覽'}
+        aria-label="切換導覽"
+      >
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+          <path d="M3 6h14M3 10h14M3 14h14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+        </svg>
+      </button>
+
+      <div className={`app-body ${sidebarOpen ? 'sidebar-open' : 'sidebar-closed'}`}>
         <Sidebar
           currentPage={currentPage}
-          onChange={setCurrentPage}
+          onChange={(p) => { setCurrentPage(p); setSidebarOpen(false); }}
           counts={{ projects: activeProjects.length }}
         />
 
