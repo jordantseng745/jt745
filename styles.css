@@ -291,6 +291,157 @@ input, textarea { font-family: inherit; }
   margin-left: 4px;
 }
 
+/* ---------- Fixed cost breakdown table ---------- */
+.fixed-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.fb-month {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  background: var(--bg-elev);
+}
+.fb-month-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+.fb-month-label {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--text);
+}
+.fb-month-total {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-3);
+}
+.fb-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.fb-bar-row {
+  display: grid;
+  grid-template-columns: 140px 1fr 120px;
+  align-items: center;
+  gap: 10px;
+}
+.fb-bar-label {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.fb-project-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fb-days {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-3);
+  letter-spacing: 0.02em;
+}
+.fb-bar-track {
+  height: 8px;
+  background: var(--bg-sunken, var(--border));
+  border-radius: 4px;
+  overflow: hidden;
+}
+.fb-bar-fill {
+  height: 100%;
+  background: var(--stage-active);
+  border-radius: 4px;
+  min-width: 2px;
+  transition: width 0.2s ease;
+}
+.fb-bar-amount {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+}
+.fb-pct {
+  font-size: 10px;
+  color: var(--text-3);
+  margin-left: 4px;
+}
+
+.fb-bar-track {
+  position: relative;
+}
+.fb-payment-info {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-3);
+  letter-spacing: 0.01em;
+}
+.fb-bar-fill-backfill {
+  background: var(--info, #3b82f6);
+  border-radius: 4px;
+}
+.fb-split-detail {
+  display: block;
+  font-size: 10px;
+  color: var(--text-3);
+  font-weight: 400;
+  white-space: normal;
+}
+.fb-backfill-text {
+  color: var(--info, #3b82f6);
+  font-weight: 500;
+}
+.fb-carry-in {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--danger, #ef4444);
+  margin-bottom: 8px;
+  padding: 4px 8px;
+  background: color-mix(in srgb, var(--danger, #ef4444) 8%, transparent);
+  border-radius: var(--radius-sm);
+}
+.fb-carry-out {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--danger, #ef4444);
+  margin-top: 8px;
+  opacity: 0.7;
+}
+.fb-month-has-deficit {
+  border-color: color-mix(in srgb, var(--danger, #ef4444) 40%, var(--border));
+}
+.fb-bar-fill-deficit {
+  background: var(--danger, #ef4444);
+}
+.fb-deficit .fb-project-name {
+  color: var(--danger, #ef4444);
+}
+.fb-deficit .fb-days {
+  color: var(--danger, #ef4444);
+  opacity: 0.7;
+}
+.fb-deficit-amount {
+  color: var(--danger, #ef4444) !important;
+}
+
+@media (max-width: 640px) {
+  .fb-bar-row {
+    grid-template-columns: 100px 1fr 90px;
+    gap: 6px;
+  }
+}
+
 /* ---------- Extra expense simulator ---------- */
 .extra-expense-section { margin-top: 8px; }
 .page-section-header {

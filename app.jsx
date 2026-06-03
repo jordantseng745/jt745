@@ -1434,7 +1434,7 @@ function computeFixedCostAllocations(projects, monthlyFixedExpense) {
   const monthSet = new Set();
   for (const p of valid) {
     const s = new Date(p.start);
-    const e = new Date(p.due);
+    const e = new Date(p.extendedDue || p.due);
     if (isNaN(s) || isNaN(e) || s > e) continue;
     const cursor = new Date(s.getFullYear(), s.getMonth(), 1);
     const stop = new Date(e.getFullYear(), e.getMonth(), 1);
@@ -1457,7 +1457,7 @@ function computeFixedCostAllocations(projects, monthlyFixedExpense) {
     let totalDays = 0;
     for (const p of valid) {
       const ps = new Date(p.start); ps.setHours(0, 0, 0, 0);
-      const pe = new Date(p.due);   pe.setHours(0, 0, 0, 0);
+      const pe = new Date(p.extendedDue || p.due);   pe.setHours(0, 0, 0, 0);
       // Clamp to this month
       const segStart = ps > monthStart ? ps : monthStart;
       const segEnd   = pe < monthEnd   ? pe : monthEnd;
@@ -1477,31 +1477,254 @@ function computeFixedCostAllocations(projects, monthlyFixedExpense) {
   return out;
 }
 
-// 延期佔用費：一支案延期（extendedDue 晚於原定 due）時，原定交件日之後多佔用的時間，
-// 用全域月固定支出的「全額費率」按實際逾期天數比例單獨算給這支案。
-// 刻意「不」進入跨案分攤池（computeFixedCostAllocations 只看原定 due），
-// 所以延期只懲罰這支案、不會稀釋其他案的固定成本。沒有延期時回傳 0。
-function overtimeFixedCost(project, monthlyFixedExpense) {
-  const monthly = Number(monthlyFixedExpense) || 0;
-  if (monthly <= 0) return 0;
-  const od = project.due ? new Date(project.due) : null;
-  const ed = project.extendedDue ? new Date(project.extendedDue) : null;
-  if (!od || !ed || isNaN(od) || isNaN(ed)) return 0;
-  od.setHours(0, 0, 0, 0); ed.setHours(0, 0, 0, 0);
-  if (ed <= od) return 0; // 沒有真正延後
-  // 逾期區間：原定交件日的「隔天」到延期日（含），逐月按該月天數比例累加
-  let cur = new Date(od); cur.setDate(cur.getDate() + 1); cur.setHours(0, 0, 0, 0);
-  let total = 0;
-  while (cur <= ed) {
-    const y = cur.getFullYear(), m = cur.getMonth();
-    const monthEnd = new Date(y, m + 1, 0); monthEnd.setHours(0, 0, 0, 0);
-    const daysInMonth = monthEnd.getDate();
-    const segEnd = ed < monthEnd ? ed : monthEnd;
-    const days = Math.round((segEnd - cur) / 86400000) + 1; // inclusive
-    total += monthly * days / daysInMonth;
-    cur = new Date(y, m + 1, 1); cur.setHours(0, 0, 0, 0); // 下個月 1 號
+// 逐月固定成本分攤明細（現金流版）：
+// 用付款日決定資金何時到位。到月底為止累計收到的款項 − 外包 = 可付房租的錢。
+// 款項還沒進來的案子不能付房租。上月缺口會遞延，新款項進來時先付本月、再補舊洞。
+// 案子結束後餘額繼續扣到花完為止。
+function computeMonthlyFixedBreakdown(projects, monthlyFixedExpense) {
+  var monthly = Number(monthlyFixedExpense) || 0;
+  var valid = (projects || []).filter(function(p) { return !p.deleted && p.start && p.due; });
+  if (monthly === 0 || valid.length === 0) return [];
+
+  // 每案的付款時程 + 外包總額
+  var paymentSchedules = {};
+  var outsourceMap = {};
+  for (var i = 0; i < valid.length; i++) {
+    var p = valid[i];
+    var budget = Number(p.budget) || 0;
+    var payments = getPayments(p);
+    var schedule = [];
+    for (var pi = 0; pi < payments.length; pi++) {
+      var pay = payments[pi];
+      if (!pay.dueDate) continue;
+      var amount = budget * (Number(pay.percentage) || 0) / 100;
+      var d = new Date(pay.dueDate); d.setHours(0, 0, 0, 0);
+      schedule.push({ date: d, amount: amount, label: pay.label, percentage: Number(pay.percentage) || 0 });
+    }
+    schedule.sort(function(a, b) { return a.date - b.date; });
+    paymentSchedules[p.id] = schedule;
+    var outsourceTotal = 0;
+    (p.outsources || []).forEach(function(o) { outsourceTotal += Number(o.amount) || 0; });
+    outsourceMap[p.id] = outsourceTotal;
   }
-  return total;
+
+  // 到某月底為止，案子累計收到多少錢 − 外包 = 可用資金上限
+  function cumulativeMarginByMonth(projId, monthEnd) {
+    var schedule = paymentSchedules[projId] || [];
+    var received = 0;
+    for (var i = 0; i < schedule.length; i++) {
+      if (schedule[i].date <= monthEnd) received += schedule[i].amount;
+    }
+    return Math.max(0, received - outsourceMap[projId]);
+  }
+
+  // 取得到某月底已收到哪些款項的標示文字
+  function getPaymentInfo(projId, monthEnd) {
+    var schedule = paymentSchedules[projId] || [];
+    var parts = [];
+    for (var i = 0; i < schedule.length; i++) {
+      if (schedule[i].date <= monthEnd) {
+        var d = schedule[i].date;
+        var dateStr = (d.getMonth() + 1) + '/' + d.getDate();
+        parts.push(schedule[i].percentage + '% ' + schedule[i].label + ' (' + dateStr + ')');
+      }
+    }
+    return parts.length > 0 ? '已收 ' + parts.join(' + ') : '';
+  }
+
+  var absorbed = {};
+  for (var i = 0; i < valid.length; i++) absorbed[valid[i].id] = 0;
+
+  // 收集專案涵蓋的月份
+  var monthSet = new Set();
+  for (var i = 0; i < valid.length; i++) {
+    var p = valid[i];
+    var s = new Date(p.start);
+    var e = new Date(p.extendedDue || p.due);
+    if (isNaN(s) || isNaN(e) || s > e) continue;
+    var cursor = new Date(s.getFullYear(), s.getMonth(), 1);
+    var stop = new Date(e.getFullYear(), e.getMonth(), 1);
+    while (cursor <= stop) {
+      monthSet.add(cursor.getFullYear() + '-' + cursor.getMonth());
+      cursor.setMonth(cursor.getMonth() + 1);
+    }
+  }
+
+  var sortedKeys = Array.from(monthSet).sort(function(a, b) {
+    var pa = a.split('-'), pb = b.split('-');
+    return (Number(pa[0]) - Number(pb[0])) || (Number(pa[1]) - Number(pb[1]));
+  });
+
+  var result = [];
+  var ki = 0;
+  var safetyLimit = 36;
+  var accumulatedDeficit = 0;
+
+  while (safetyLimit-- > 0) {
+    var year, month, key;
+
+    if (ki < sortedKeys.length) {
+      key = sortedKeys[ki];
+      var parts = key.split('-');
+      year = Number(parts[0]);
+      month = Number(parts[1]);
+      ki++;
+    } else {
+      var anyLeft = false;
+      for (var j = 0; j < valid.length; j++) {
+        var totalMargin = cumulativeMarginByMonth(valid[j].id, new Date(9999, 0));
+        if (totalMargin - absorbed[valid[j].id] > 1) { anyLeft = true; break; }
+      }
+      if (!anyLeft) break;
+      var last = result[result.length - 1];
+      year = last.year;
+      month = last.month + 1;
+      if (month > 11) { month = 0; year++; }
+      key = year + '-' + month;
+    }
+
+    var monthStart = new Date(year, month, 1); monthStart.setHours(0, 0, 0, 0);
+    var monthEnd = new Date(year, month + 1, 0); monthEnd.setHours(0, 0, 0, 0);
+    var carryIn = accumulatedDeficit;
+    var sharesMap = {};
+
+    // ── 第一步：付本月房租 ──
+    var uncoveredCurrent = monthly;
+    var totalDays = 0;
+    var activeCandidates = [];
+    for (var j = 0; j < valid.length; j++) {
+      var proj = valid[j];
+      var availableMargin = cumulativeMarginByMonth(proj.id, monthEnd);
+      var rem = availableMargin - absorbed[proj.id];
+      if (rem <= 0) continue;
+      var ps = new Date(proj.start); ps.setHours(0, 0, 0, 0);
+      var pe = new Date(proj.extendedDue || proj.due); pe.setHours(0, 0, 0, 0);
+      var segStart = ps > monthStart ? ps : monthStart;
+      var segEnd = pe < monthEnd ? pe : monthEnd;
+      if (segStart > segEnd) continue;
+      var days = Math.round((segEnd - segStart) / 86400000) + 1;
+      activeCandidates.push({ id: proj.id, title: proj.title, days: days });
+      totalDays += days;
+    }
+    if (totalDays > 0) {
+      for (var ci = 0; ci < activeCandidates.length; ci++) {
+        var c = activeCandidates[ci];
+        var availableMargin = cumulativeMarginByMonth(c.id, monthEnd);
+        var rem = availableMargin - absorbed[c.id];
+        var proportional = monthly * c.days / totalDays;
+        var capped = Math.min(proportional, rem);
+        sharesMap[c.id] = { id: c.id, title: c.title, days: c.days, current: capped, backfill: 0, paymentInfo: getPaymentInfo(c.id, monthEnd) };
+        absorbed[c.id] += capped;
+        uncoveredCurrent -= capped;
+      }
+    }
+    // 本月沒人扛的部分，找有餘額的案子補
+    var maxIter = 10;
+    while (uncoveredCurrent > 1 && maxIter-- > 0) {
+      var fillers = [];
+      var totalRem = 0;
+      for (var j = 0; j < valid.length; j++) {
+        var proj = valid[j];
+        var availableMargin = cumulativeMarginByMonth(proj.id, monthEnd);
+        var rem = availableMargin - absorbed[proj.id];
+        if (rem <= 0) continue;
+        fillers.push({ id: proj.id, title: proj.title, remaining: rem });
+        totalRem += rem;
+      }
+      if (fillers.length === 0 || totalRem < 1) break;
+      var filled = 0;
+      for (var fi = 0; fi < fillers.length; fi++) {
+        var f = fillers[fi];
+        var share = uncoveredCurrent * f.remaining / totalRem;
+        var capped = Math.min(share, f.remaining);
+        if (sharesMap[f.id]) {
+          sharesMap[f.id].current += capped;
+        } else {
+          sharesMap[f.id] = { id: f.id, title: f.title, days: 0, current: capped, backfill: 0, paymentInfo: getPaymentInfo(f.id, monthEnd) };
+        }
+        absorbed[f.id] += capped;
+        filled += capped;
+      }
+      uncoveredCurrent -= filled;
+    }
+
+    // ── 第二步：補上月累計缺口 ──
+    var uncoveredBackfill = accumulatedDeficit;
+    if (uncoveredBackfill > 1) {
+      var maxIter2 = 10;
+      while (uncoveredBackfill > 1 && maxIter2-- > 0) {
+        var fillers2 = [];
+        var totalRem2 = 0;
+        for (var j = 0; j < valid.length; j++) {
+          var proj = valid[j];
+          var availableMargin = cumulativeMarginByMonth(proj.id, monthEnd);
+          var rem = availableMargin - absorbed[proj.id];
+          if (rem <= 0) continue;
+          fillers2.push({ id: proj.id, title: proj.title, remaining: rem });
+          totalRem2 += rem;
+        }
+        if (fillers2.length === 0 || totalRem2 < 1) break;
+        var filled2 = 0;
+        for (var fi = 0; fi < fillers2.length; fi++) {
+          var f = fillers2[fi];
+          var share = uncoveredBackfill * f.remaining / totalRem2;
+          var capped = Math.min(share, f.remaining);
+          if (sharesMap[f.id]) {
+            sharesMap[f.id].backfill += capped;
+          } else {
+            sharesMap[f.id] = { id: f.id, title: f.title, days: 0, current: 0, backfill: capped, paymentInfo: getPaymentInfo(f.id, monthEnd) };
+          }
+          absorbed[f.id] += capped;
+          filled2 += capped;
+        }
+        uncoveredBackfill -= filled2;
+      }
+    }
+
+    // ── 組裝結果 ──
+    var sharesArr = [];
+    for (var sid in sharesMap) {
+      var s = sharesMap[sid];
+      s.amount = s.current + s.backfill;
+      if (s.amount > 0) sharesArr.push(s);
+    }
+
+    var currentDeficit = uncoveredCurrent > 1 ? uncoveredCurrent : 0;
+    var remainingBackfill = uncoveredBackfill > 1 ? uncoveredBackfill : 0;
+    accumulatedDeficit = currentDeficit + remainingBackfill;
+
+    var label = year + ' 年 ' + (month + 1) + ' 月';
+    result.push({
+      key: key, year: year, month: month, label: label, total: monthly,
+      carryIn: carryIn > 1 ? Math.round(carryIn) : 0,
+      projects: sharesArr,
+      deficit: currentDeficit > 1 ? Math.round(currentDeficit) : 0,
+      carryOut: accumulatedDeficit > 1 ? Math.round(accumulatedDeficit) : 0
+    });
+
+    if (sharesArr.length === 0 && ki >= sortedKeys.length) break;
+  }
+
+  return result;
+}
+
+// 延期佔用費（差額法）：比較「有延期」vs「沒延期」的分攤結果，差額就是延期造成的額外成本。
+// 不會重複收費、帳永遠對得上。沒有任何案延期時回傳空物件。
+function computeOvertimeAllocations(projects, monthlyFixedExpense) {
+  const monthly = Number(monthlyFixedExpense) || 0;
+  if (monthly === 0) return {};
+  const hasAny = (projects || []).some(p => p.extendedDue && new Date(p.extendedDue) > new Date(p.due));
+  if (!hasAny) return {};
+  // 真實分攤（用 extendedDue || due，已在 computeFixedCostAllocations 裡）
+  const real = computeFixedCostAllocations(projects, monthly);
+  // 假設全部沒延期的分攤
+  var stripped = projects.map(function(p) { return p.extendedDue ? Object.assign({}, p, { extendedDue: '' }) : p; });
+  const hypo = computeFixedCostAllocations(stripped, monthly);
+  var out = {};
+  for (var id in real) {
+    out[id] = Math.max(0, (real[id] || 0) - (hypo[id] || 0));
+  }
+  return out;
 }
 
 // ---------- Cost Panel ----------
@@ -1509,20 +1732,20 @@ function overtimeFixedCost(project, monthlyFixedExpense) {
 // it as the project's allocated fixed cost. When omitted, fall back to the
 // legacy per-project fixedMonthly * months calc (for projects that pre-date the
 // global setting).
-function calcCosts(project, fixedCostOverride, monthlyFixedExpenseGlobal) {
+function calcCosts(project, fixedCostOverride, monthlyFixedExpenseGlobal, overtimeOverride) {
   const start = project.start ? new Date(project.start) : null;
-  const due = project.due ? new Date(project.due) : null;
-  const days = (start && due && !isNaN(start) && !isNaN(due)) ? Math.max(1, daysBetween(start, due)) : 0;
+  const effDue = new Date(project.extendedDue || project.due || '');
+  const days = (start && !isNaN(start) && !isNaN(effDue)) ? Math.max(1, daysBetween(start, effDue)) : 0;
   const months = days / 30;
 
-  let baseFixedCost;
+  let totalFixedAlloc;
   if (typeof fixedCostOverride === 'number') {
-    baseFixedCost = fixedCostOverride;
+    totalFixedAlloc = fixedCostOverride;
   } else {
     const fallbackMonthly = (typeof monthlyFixedExpenseGlobal === 'number' && monthlyFixedExpenseGlobal > 0)
       ? monthlyFixedExpenseGlobal
       : (project.fixedMonthly || 0);
-    baseFixedCost = fallbackMonthly * months;
+    totalFixedAlloc = fallbackMonthly * months;
   }
 
   let outsourceTotal = 0;
@@ -1541,9 +1764,9 @@ function calcCosts(project, fixedCostOverride, monthlyFixedExpenseGlobal) {
   const preTax = isOverseas ? budget : Math.round(budget / 1.05);
   const salesVAT = isOverseas ? 0 : budget - preTax;
   const netVAT = isOverseas ? 0 : Math.max(0, salesVAT - creditableInputTax);
-  // 延期佔用費（全額費率、按逾期天數，不進分攤池）。沒延期時為 0。
-  const overtimeFixed = overtimeFixedCost(project, monthlyFixedExpenseGlobal);
-  const fixedCost = baseFixedCost + overtimeFixed;
+  const overtimeFixed = typeof overtimeOverride === 'number' ? Math.max(0, overtimeOverride) : 0;
+  const baseFixedCost = totalFixedAlloc - overtimeFixed;
+  const fixedCost = totalFixedAlloc;
   const profit = budget - fixedCost - outsourceTotal - netVAT;
 
   return { days, months, fixedCost, baseFixedCost, overtimeFixed, outsourceTotal, companyOutsource, personalOutsource, salesVAT, creditableInputTax, netVAT, profit, preTax, isOverseas };
@@ -1928,9 +2151,10 @@ function buildExportData(allProjects, settings) {
 
   const monthlyFixed = Number(settings?.monthlyFixedExpense) || 0;
   const allocations = computeFixedCostAllocations(allProjects, monthlyFixed);
+  const overtimeAlloc = computeOvertimeAllocations(allProjects, monthlyFixed);
 
   const projectToExport = (p) => {
-    const c = calcCosts(p, allocations[p.id], monthlyFixed);
+    const c = calcCosts(p, allocations[p.id], monthlyFixed, overtimeAlloc[p.id]);
     const payments = getPayments(p);
     const pct = projectPct(p);
     const currentStage = p.stages.find(s => s.status === 'active')
@@ -2032,7 +2256,7 @@ function buildExportData(allProjects, settings) {
   };
 
   const activeBudgetTotal = active.reduce((a, p) => a + (Number(p.budget) || 0), 0);
-  const activeProfitTotal = active.reduce((a, p) => a + calcCosts(p, allocations[p.id], monthlyFixed).profit, 0);
+  const activeProfitTotal = active.reduce((a, p) => a + calcCosts(p, allocations[p.id], monthlyFixed, overtimeAlloc[p.id]).profit, 0);
   const activeFixedTotal  = active.reduce((a, p) => a + (allocations[p.id] || 0), 0);
 
   return {
@@ -2206,10 +2430,10 @@ function PaymentSchedule({ project, onUpdate }) {
   );
 }
 
-function CostPanel({ project, onUpdate, fixedCostShare, monthlyFixedExpense, onOpenCashSettings, outsourceRoles, customOutsourceRoles, onUpdateCustomOutsourceRoles }) {
+function CostPanel({ project, onUpdate, fixedCostShare, overtimeShare, monthlyFixedExpense, onOpenCashSettings, outsourceRoles, customOutsourceRoles, onUpdateCustomOutsourceRoles }) {
   const c = useMemo(
-    () => calcCosts(project, fixedCostShare, monthlyFixedExpense),
-    [project, fixedCostShare, monthlyFixedExpense]
+    () => calcCosts(project, fixedCostShare, monthlyFixedExpense, overtimeShare),
+    [project, fixedCostShare, overtimeShare, monthlyFixedExpense]
   );
   const update = (patch) => onUpdate({ ...project, ...patch });
   const [detailsOpen, setDetailsOpen] = useState(true);
@@ -2441,7 +2665,7 @@ function CostPanel({ project, onUpdate, fixedCostShare, monthlyFixedExpense, onO
 }
 
 // ---------- Project Card ----------
-function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycleStage, onCloseDetail, onUpdateStage, onDeleteStage, onInsertStage, onUpdateProject, onTogglePanel, onDeleteProject, onArchive, onRestore, onPurgeProject, density, stageVariant, dragHandleProps, dropTargetProps, isDragging, isOver, panelStyle, fixedCostShare, monthlyFixedExpense, onOpenCashSettings, outsourceRoles, customOutsourceRoles, onUpdateCustomOutsourceRoles, isFocused, anyFocused }) {
+function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycleStage, onCloseDetail, onUpdateStage, onDeleteStage, onInsertStage, onUpdateProject, onTogglePanel, onDeleteProject, onArchive, onRestore, onPurgeProject, density, stageVariant, dragHandleProps, dropTargetProps, isDragging, isOver, panelStyle, fixedCostShare, overtimeShare, monthlyFixedExpense, onOpenCashSettings, outsourceRoles, customOutsourceRoles, onUpdateCustomOutsourceRoles, isFocused, anyFocused }) {
   const origDue = new Date(project.due);
   const isExtended = !!project.extendedDue && new Date(project.extendedDue) > origDue;
   const effDue = isExtended ? new Date(project.extendedDue) : origDue;
@@ -2586,6 +2810,7 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
           project={project}
           onUpdate={(p) => onUpdateProject(project.id, p)}
           fixedCostShare={fixedCostShare}
+          overtimeShare={overtimeShare}
           monthlyFixedExpense={monthlyFixedExpense}
           onOpenCashSettings={onOpenCashSettings}
           outsourceRoles={outsourceRoles}
@@ -4140,6 +4365,89 @@ function GanttStageBar({ project, stage, color, dayOffset, onResize }) {
 }
 
 // ---------- Finance page (cash flow + cross-project summary) ----------
+function FixedCostBreakdownSection({ projects, monthlyFixed }) {
+  const [open, setOpen] = useState(false);
+  const breakdown = useMemo(
+    () => computeMonthlyFixedBreakdown(projects, monthlyFixed),
+    [projects, monthlyFixed]
+  );
+
+  if (breakdown.length === 0) return null;
+
+  return (
+    <section className="finance-summary">
+      <div className="page-section-header collapsible">
+        <button className="section-collapse-btn" onClick={() => setOpen(o => !o)} title={open ? '收起' : '展開'}>
+          <span className="chevron">{open ? '▾' : '▸'}</span>
+          <h3 className="page-section-title">每月固定成本分攤表</h3>
+        </button>
+        {!open && (
+          <span className="cashflow-stat">涵蓋 <strong>{breakdown.length}</strong> 個月</span>
+        )}
+      </div>
+      {open && (
+        <div className="fixed-breakdown">
+          {breakdown.map(m => {
+            var totalNeeded = m.total + m.carryIn;
+            return (
+            <div key={m.key} className={'fb-month' + (m.deficit > 0 ? ' fb-month-has-deficit' : '')}>
+              <div className="fb-month-header">
+                <span className="fb-month-label">{m.label}</span>
+                <span className="fb-month-total">{fmtNT(m.total)}</span>
+              </div>
+              {m.carryIn > 0 && (
+                <div className="fb-carry-in">上月累計缺口：{fmtNT(m.carryIn)}</div>
+              )}
+              <div className="fb-bars">
+                {m.projects.map(s => {
+                  var currentPct = totalNeeded > 0 ? Math.round(s.current / totalNeeded * 100) : 0;
+                  var backfillPct = totalNeeded > 0 ? Math.round(s.backfill / totalNeeded * 100) : 0;
+                  var hasBackfill = s.backfill > 0;
+                  return (
+                    <div key={s.id} className="fb-bar-row">
+                      <div className="fb-bar-label">
+                        <span className="fb-project-name">{s.title}</span>
+                        <span className="fb-days">{s.days > 0 ? s.days + ' 天' : '餘額支付'}</span>
+                        {s.paymentInfo && <span className="fb-payment-info">{s.paymentInfo}</span>}
+                      </div>
+                      <div className="fb-bar-track">
+                        <div className="fb-bar-fill" style={{ width: currentPct + '%' }}></div>
+                        {hasBackfill && <div className="fb-bar-fill fb-bar-fill-backfill" style={{ width: backfillPct + '%', left: currentPct + '%', position: 'absolute', top: 0 }}></div>}
+                      </div>
+                      <div className="fb-bar-amount">
+                        {fmtNT(Math.round(s.amount))}
+                        {hasBackfill && (
+                          <span className="fb-split-detail">（本月 {fmtNT(Math.round(s.current))} + <span className="fb-backfill-text">補缺口 {fmtNT(Math.round(s.backfill))}</span>）</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                {m.deficit > 0 && (
+                  <div className="fb-bar-row fb-deficit">
+                    <div className="fb-bar-label">
+                      <span className="fb-project-name">缺口</span>
+                      <span className="fb-days">無案負擔</span>
+                    </div>
+                    <div className="fb-bar-track">
+                      <div className="fb-bar-fill fb-bar-fill-deficit" style={{ width: Math.round(m.deficit / totalNeeded * 100) + '%' }}></div>
+                    </div>
+                    <div className="fb-bar-amount fb-deficit-amount">{fmtNT(Math.round(m.deficit))}</div>
+                  </div>
+                )}
+              </div>
+              {m.carryOut > 0 && (
+                <div className="fb-carry-out">累計缺口結轉：{fmtNT(m.carryOut)}</div>
+              )}
+            </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdateExtraExpenses, onUpdateCustomCategories }) {
   const handleExport = () => {
     const data = buildExportData(allProjects || projects, settings || {});
@@ -4159,9 +4467,13 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
     () => computeFixedCostAllocations(allProjects || projects, monthlyFixed),
     [allProjects, projects, monthlyFixed]
   );
+  const overtimeAlloc = useMemo(
+    () => computeOvertimeAllocations(allProjects || projects, monthlyFixed),
+    [allProjects, projects, monthlyFixed]
+  );
 
   const rows = projects.map(p => {
-    const c = calcCosts(p, allocations[p.id], monthlyFixed);
+    const c = calcCosts(p, allocations[p.id], monthlyFixed, overtimeAlloc[p.id]);
     return {
       id: p.id,
       title: p.title,
@@ -4249,6 +4561,11 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
           )
         )}
       </section>
+
+      <FixedCostBreakdownSection
+        projects={allProjects || projects}
+        monthlyFixed={monthlyFixed}
+      />
 
       <ExtraExpenseList
         series={series}
@@ -4643,13 +4960,18 @@ function Tracker({ session, onSignOut }) {
     () => computeFixedCostAllocations(projects, monthlyFixedExpense),
     [projects, monthlyFixedExpense]
   );
+  const overtimeAllocations = useMemo(
+    () => computeOvertimeAllocations(projects, monthlyFixedExpense),
+    [projects, monthlyFixedExpense]
+  );
 
   const totalBudget = activeProjects.reduce((a, p) => a + p.budget, 0);
   const urgentCount = activeProjects.filter(p => {
-    const d = daysBetween(TODAY, new Date(p.due));
-    return d >= 0 && d <= 14;
+    const effD = p.extendedDue || p.due;
+    const d = effD ? daysBetween(TODAY, new Date(effD)) : null;
+    return d !== null && d >= 0 && d <= 14;
   }).length;
-  const totalProfit = activeProjects.reduce((a, p) => a + calcCosts(p, fixedCostAllocations[p.id], monthlyFixedExpense).profit, 0);
+  const totalProfit = activeProjects.reduce((a, p) => a + calcCosts(p, fixedCostAllocations[p.id], monthlyFixedExpense, overtimeAllocations[p.id]).profit, 0);
 
   const expandedProj = expanded ? projects.find(p => p.id === expanded.projectId) : null;
 
@@ -4790,6 +5112,7 @@ function Tracker({ session, onSignOut }) {
                       onTogglePanel={onTogglePanel}
                       onDeleteProject={onDeleteProject}
                       fixedCostShare={fixedCostAllocations[p.id]}
+                      overtimeShare={overtimeAllocations[p.id]}
                       monthlyFixedExpense={monthlyFixedExpense}
                       onOpenCashSettings={() => setShowCashSettings(true)}
                       outsourceRoles={[...DEFAULT_OUTSOURCE_ROLES, ...((globalSettings?.customOutsourceRoles) || [])]}
