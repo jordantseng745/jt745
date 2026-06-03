@@ -20,6 +20,7 @@
 
   --warn: #ef4444;
   --warn-bg: #fef2f2;
+  --overtime: #f97316;
 
   --radius-sm: 6px;
   --radius: 12px;
@@ -54,6 +55,7 @@
 
   --warn: #f87171;
   --warn-bg: #2a1414;
+  --overtime: #fb923c;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.25);
   --shadow-lg: 0 24px 60px -20px rgba(0, 0, 0, 0.7), 0 8px 24px -12px rgba(0, 0, 0, 0.4);
@@ -1441,6 +1443,25 @@ input, textarea { font-family: inherit; }
 .countdown.warn .countdown-num { color: var(--warn); }
 .countdown.warn .countdown-label {
   color: var(--warn);
+}
+/* 延長賽（專案延期）：橘色，優先於緊急紅 */
+.countdown.overtime .countdown-num { color: var(--overtime); }
+.countdown.overtime .countdown-label,
+.countdown.overtime .due-date { color: var(--overtime); }
+.overtime-note {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.03em;
+  color: var(--overtime);
+  margin-top: 2px;
+}
+/* 成本面板：延期佔用費那一條（橘） */
+.cost-row-line.overtime span,
+.cost-row-line.overtime .num-val { color: var(--overtime); }
+.cost-row-line.total-fixed {
+  border-top: 1px dashed var(--border);
+  margin-top: 3px;
+  padding-top: 5px;
 }
 
 .completion {

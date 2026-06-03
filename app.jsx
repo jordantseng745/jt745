@@ -1477,6 +1477,33 @@ function computeFixedCostAllocations(projects, monthlyFixedExpense) {
   return out;
 }
 
+// 延期佔用費：一支案延期（extendedDue 晚於原定 due）時，原定交件日之後多佔用的時間，
+// 用全域月固定支出的「全額費率」按實際逾期天數比例單獨算給這支案。
+// 刻意「不」進入跨案分攤池（computeFixedCostAllocations 只看原定 due），
+// 所以延期只懲罰這支案、不會稀釋其他案的固定成本。沒有延期時回傳 0。
+function overtimeFixedCost(project, monthlyFixedExpense) {
+  const monthly = Number(monthlyFixedExpense) || 0;
+  if (monthly <= 0) return 0;
+  const od = project.due ? new Date(project.due) : null;
+  const ed = project.extendedDue ? new Date(project.extendedDue) : null;
+  if (!od || !ed || isNaN(od) || isNaN(ed)) return 0;
+  od.setHours(0, 0, 0, 0); ed.setHours(0, 0, 0, 0);
+  if (ed <= od) return 0; // 沒有真正延後
+  // 逾期區間：原定交件日的「隔天」到延期日（含），逐月按該月天數比例累加
+  let cur = new Date(od); cur.setDate(cur.getDate() + 1); cur.setHours(0, 0, 0, 0);
+  let total = 0;
+  while (cur <= ed) {
+    const y = cur.getFullYear(), m = cur.getMonth();
+    const monthEnd = new Date(y, m + 1, 0); monthEnd.setHours(0, 0, 0, 0);
+    const daysInMonth = monthEnd.getDate();
+    const segEnd = ed < monthEnd ? ed : monthEnd;
+    const days = Math.round((segEnd - cur) / 86400000) + 1; // inclusive
+    total += monthly * days / daysInMonth;
+    cur = new Date(y, m + 1, 1); cur.setHours(0, 0, 0, 0); // 下個月 1 號
+  }
+  return total;
+}
+
 // ---------- Cost Panel ----------
 // fixedCostOverride: optional. When given (from computeFixedCostAllocations), use
 // it as the project's allocated fixed cost. When omitted, fall back to the
@@ -1488,14 +1515,14 @@ function calcCosts(project, fixedCostOverride, monthlyFixedExpenseGlobal) {
   const days = (start && due && !isNaN(start) && !isNaN(due)) ? Math.max(1, daysBetween(start, due)) : 0;
   const months = days / 30;
 
-  let fixedCost;
+  let baseFixedCost;
   if (typeof fixedCostOverride === 'number') {
-    fixedCost = fixedCostOverride;
+    baseFixedCost = fixedCostOverride;
   } else {
     const fallbackMonthly = (typeof monthlyFixedExpenseGlobal === 'number' && monthlyFixedExpenseGlobal > 0)
       ? monthlyFixedExpenseGlobal
       : (project.fixedMonthly || 0);
-    fixedCost = fallbackMonthly * months;
+    baseFixedCost = fallbackMonthly * months;
   }
 
   let outsourceTotal = 0;
@@ -1514,9 +1541,12 @@ function calcCosts(project, fixedCostOverride, monthlyFixedExpenseGlobal) {
   const preTax = isOverseas ? budget : Math.round(budget / 1.05);
   const salesVAT = isOverseas ? 0 : budget - preTax;
   const netVAT = isOverseas ? 0 : Math.max(0, salesVAT - creditableInputTax);
+  // 延期佔用費（全額費率、按逾期天數，不進分攤池）。沒延期時為 0。
+  const overtimeFixed = overtimeFixedCost(project, monthlyFixedExpenseGlobal);
+  const fixedCost = baseFixedCost + overtimeFixed;
   const profit = budget - fixedCost - outsourceTotal - netVAT;
 
-  return { days, months, fixedCost, outsourceTotal, companyOutsource, personalOutsource, salesVAT, creditableInputTax, netVAT, profit, preTax, isOverseas };
+  return { days, months, fixedCost, baseFixedCost, overtimeFixed, outsourceTotal, companyOutsource, personalOutsource, salesVAT, creditableInputTax, netVAT, profit, preTax, isOverseas };
 }
 
 // ---------- Cash flow timeline ----------
@@ -2207,6 +2237,8 @@ function CostPanel({ project, onUpdate, fixedCostShare, monthlyFixedExpense, onO
   };
 
   const profitPct = project.budget ? Math.round((c.profit / project.budget) * 100) : 0;
+  const extDays = (project.extendedDue && project.due && new Date(project.extendedDue) > new Date(project.due))
+    ? daysBetween(new Date(project.due), new Date(project.extendedDue)) : 0;
 
   return (
     <div className="cost-panel">
@@ -2269,11 +2301,24 @@ function CostPanel({ project, onUpdate, fixedCostShare, monthlyFixedExpense, onO
             <span className="num-val">{c.days} 天 ({c.months.toFixed(1)} 月)</span>
           </div>
           <div className="cost-row-line emphasis">
-            <span>實際分攤固定成本</span>
-            <span className="num-val">{fmtNT(c.fixedCost)}</span>
+            <span>{c.overtimeFixed > 0 ? '分攤固定成本（原訂期間）' : '實際分攤固定成本'}</span>
+            <span className="num-val">{fmtNT(c.baseFixedCost)}</span>
           </div>
+          {c.overtimeFixed > 0 && (
+            <div className="cost-row-line emphasis overtime">
+              <span>延期佔用費（加時 {extDays} 天）</span>
+              <span className="num-val">＋{fmtNT(c.overtimeFixed)}</span>
+            </div>
+          )}
+          {c.overtimeFixed > 0 && (
+            <div className="cost-row-line emphasis total-fixed">
+              <span>固定成本合計</span>
+              <span className="num-val">{fmtNT(c.fixedCost)}</span>
+            </div>
+          )}
           <div className="cost-row-hint">
             按月分攤：當月固定支出由當月活躍的所有專案，依各案在當月的天數比例分擔。當月只有一案時，該案吸收當月全額。
+            {c.overtimeFixed > 0 && <><br/>此案已延期：原訂交件後多佔用的時間，按實際逾期天數以全額月費率單獨向本案收取，<strong>不影響其他案的分攤</strong>。</>}
           </div>
         </div>
 
@@ -2397,9 +2442,12 @@ function CostPanel({ project, onUpdate, fixedCostShare, monthlyFixedExpense, onO
 
 // ---------- Project Card ----------
 function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycleStage, onCloseDetail, onUpdateStage, onDeleteStage, onInsertStage, onUpdateProject, onTogglePanel, onDeleteProject, onArchive, onRestore, onPurgeProject, density, stageVariant, dragHandleProps, dropTargetProps, isDragging, isOver, panelStyle, fixedCostShare, monthlyFixedExpense, onOpenCashSettings, outsourceRoles, customOutsourceRoles, onUpdateCustomOutsourceRoles, isFocused, anyFocused }) {
-  const due = new Date(project.due);
-  const days = daysBetween(TODAY, due);
+  const origDue = new Date(project.due);
+  const isExtended = !!project.extendedDue && new Date(project.extendedDue) > origDue;
+  const effDue = isExtended ? new Date(project.extendedDue) : origDue;
+  const days = daysBetween(TODAY, effDue);
   const warn = days <= 14 && days >= 0;
+  const extDays = isExtended ? daysBetween(origDue, new Date(project.extendedDue)) : 0;
 
   const [showEditModal, setShowEditModal] = useState(false);
 
@@ -2467,15 +2515,18 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
         </div>
 
         <div className="card-right">
-          <div className={`countdown ${warn ? 'warn' : ''}`}>
+          <div className={`countdown ${isExtended ? 'overtime' : (warn ? 'warn' : '')}`}>
             <div className="countdown-num">
               {days < 0 ? `+${Math.abs(days)}` : days}<span className="unit">{days < 0 ? '天逾期' : '天'}</span>
             </div>
             <div className="countdown-label">
-              <span className="due-date">{fmtDate(project.due)}</span>
+              <span className="due-date">{fmtDate(effDue)}</span>
               <span className="due-sep">·</span>
-              <span>{warn ? '緊急' : '距交件'}</span>
+              <span>{isExtended ? '延長賽' : (warn ? '緊急' : '距交件')}</span>
             </div>
+            {isExtended && (
+              <div className="overtime-note">原定 {fmtDate(origDue)}・加時 {extDays} 天</div>
+            )}
           </div>
           <CompletionRing pct={pct} />
         </div>
@@ -2574,6 +2625,7 @@ function EditProjectModal({ project, onClose, onSave }) {
     budget: project.budget || '',
     start: project.start || '',
     due: project.due || '',
+    extendedDue: project.extendedDue || '',
     color: project.color || 'none',
   });
 
@@ -2588,6 +2640,7 @@ function EditProjectModal({ project, onClose, onSave }) {
       budget: Number(form.budget),
       start: form.start,
       due: form.due,
+      extendedDue: form.extendedDue || '',
       color: form.color,
     });
   };
@@ -2617,8 +2670,20 @@ function EditProjectModal({ project, onClose, onSave }) {
             </div>
           </div>
           <div className="field">
-            <label className="field-label">交件日期</label>
+            <label className="field-label">交件日期（原定）</label>
             <input className="date-input" type="date" value={form.due} onChange={e => setForm({ ...form, due: e.target.value })} />
+          </div>
+          <div className="field">
+            <label className="field-label">延期到（選填）</label>
+            <input className="date-input" type="date" value={form.extendedDue}
+              min={form.due || undefined}
+              onChange={e => setForm({ ...form, extendedDue: e.target.value })} />
+            <div className="field-hint">
+              專案延期才填。填了之後：倒數改用這天、卡片轉橘色「延長賽」，並對<strong>本案</strong>按逾期天數加收「延期佔用費」；<strong>不影響其他案</strong>的固定成本分攤。留空＝沒有延期。
+              {form.extendedDue && (
+                <> <button type="button" className="link-btn-inline" onClick={() => setForm({ ...form, extendedDue: '' })}>清除延期</button></>
+              )}
+            </div>
           </div>
           <div className="field">
             <label className="field-label">卡片色彩</label>
