@@ -749,11 +749,25 @@ function ItemStatusDropdown({ value, onChange }) {
   );
 }
 
-// 子細項列：純勾選清單。一鍵切換完成 / 未完成（不再用五態下拉，避免每項點兩下）。
-function ChildBar({ child, onToggle, onRemove }) {
+// 子細項列：勾選 + 點文字編輯 + 顏色標記。
+var CHILD_COLORS = ['', 'yellow', 'blue'];
+var CHILD_COLOR_LABELS = { '': '無', yellow: '黃', blue: '藍' };
+function ChildBar({ child, onToggle, onRemove, onUpdate }) {
+  const [editing, setEditing] = useState(false);
+  const [colorOpen, setColorOpen] = useState(false);
+  const colorRef = useRef(null);
   const isDone = ['done', 'confirmed'].includes(childStatus(child));
+  const color = child.color || '';
+
+  useEffect(() => {
+    if (!colorOpen) return;
+    const handler = (e) => { if (colorRef.current && !colorRef.current.contains(e.target)) setColorOpen(false); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [colorOpen]);
+
   return (
-    <div className={`item-bar child ${isDone ? 'is-done' : ''}`}>
+    <div className={`item-bar child ${isDone ? 'is-done' : ''} ${color ? 'child-color-' + color : ''}`}>
       <button
         className={`child-checkbox ${isDone ? 'checked' : ''}`}
         onClick={onToggle}
@@ -762,8 +776,40 @@ function ChildBar({ child, onToggle, onRemove }) {
       >
         {isDone ? '✓' : ''}
       </button>
-      <span className="item-bar-text">{child.text}</span>
-      <button className="item-bar-action danger" onClick={onRemove} title="刪除">×</button>
+      {editing ? (
+        <input
+          autoFocus
+          type="text"
+          className="input child-edit-input"
+          defaultValue={child.text}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.target.blur();
+            if (e.key === 'Escape') setEditing(false);
+          }}
+          onBlur={(e) => {
+            var v = e.target.value.trim();
+            if (v && v !== child.text) onUpdate({ text: v });
+            setEditing(false);
+          }}
+        />
+      ) : (
+        <span className="item-bar-text child-text-editable" onClick={() => setEditing(true)} title="點一下編輯文字">{child.text}</span>
+      )}
+      <div className="child-actions">
+        <div className="child-color-picker" ref={colorRef}>
+          <button className={`child-color-btn ${color ? 'child-color-' + color : 'child-color-none'}`} onClick={() => setColorOpen(o => !o)} title="顏色標記" type="button">●</button>
+          {colorOpen && (
+            <div className="child-color-menu">
+              {CHILD_COLORS.map(c => (
+                <button key={c || 'none'} className={`child-color-option ${c ? 'child-color-' + c : 'child-color-none'} ${c === color ? 'current' : ''}`} onClick={() => { onUpdate({ color: c }); setColorOpen(false); }} type="button">
+                  {CHILD_COLOR_LABELS[c]}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <button className="item-bar-action danger" onClick={() => { if (confirm('確定刪除這個子細項？')) onRemove(); }} title="刪除">×</button>
+      </div>
     </div>
   );
 }
@@ -1074,7 +1120,7 @@ function ChecklistEditor({ stage, onUpdate }) {
                 }} title="從預設項目選擇">
                   <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 5l4 4 4-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 </button>
-                <button className="item-bar-action danger" onClick={() => remove(it.id)} title="刪除">×</button>
+                <button className="item-bar-action danger" onClick={() => { if (confirm('確定刪除這個項目？')) remove(it.id); }} title="刪除">×</button>
               </div>
               {it.editing === 'select' ? (
                 <div className="item-bar-text-area">
@@ -1181,6 +1227,14 @@ function ChecklistEditor({ stage, onUpdate }) {
                     child={c}
                     onToggle={() => setItemStatus(c.id, ['done','confirmed'].includes(childStatus(c)) ? 'todo' : 'done')}
                     onRemove={() => remove(c.id)}
+                    onUpdate={(patch) => {
+                      onUpdate({
+                        ...stage,
+                        items: stage.items.map(x => x.id === it.id
+                          ? { ...x, children: (x.children || []).map(ch => ch.id === c.id ? { ...ch, ...patch } : ch) }
+                          : x)
+                      });
+                    }}
                   />
                 ))}
                 <div className="item-children-add">
@@ -1397,7 +1451,7 @@ function InfoPanel({ project, onUpdate }) {
                 <input className="input" placeholder="名稱（例：客戶 brief、Mood board）" value={r.label} onChange={e => updRef(r.id, { label: e.target.value })} />
                 <input className="input" placeholder="https://…" value={r.url} onChange={e => updRef(r.id, { url: e.target.value })} />
                 {r.url && <a href={r.url} target="_blank" rel="noopener noreferrer" className="open-link" title="開啟">↗</a>}
-                <button className="delete-item visible" onClick={() => rmRef(r.id)} title="刪除">×</button>
+                <button className="delete-item visible" onClick={() => { if (confirm('確定刪除這筆參考資料？')) rmRef(r.id); }} title="刪除">×</button>
               </div>
             ))}
           </div>
@@ -2395,7 +2449,7 @@ function PaymentSchedule({ project, onUpdate }) {
               onChange={e => setDate(p.id, e.target.value)} />
             <div className="num-val right">{fmtNT(budget * (Number(p.percentage) || 0) / 100)}</div>
             {payments.length > 1 ? (
-              <button className="delete-item visible" onClick={() => deletePayment(p.id)} title="刪除這筆款項（剩餘的會自動補到 100%）">×</button>
+              <button className="delete-item visible" onClick={() => { if (confirm('確定刪除這筆款項？剩餘的會自動補到 100%。')) deletePayment(p.id); }} title="刪除這筆款項（剩餘的會自動補到 100%）">×</button>
             ) : <div></div>}
           </div>
         ))}
@@ -2653,7 +2707,7 @@ function CostPanel({ project, onUpdate, fixedCostShare, overtimeShare, monthlyFi
                     title={o.type === 'personal' ? '個人外包無法抵稅' : '可抵扣 5% 進項稅'}>
                   </div>
                 </div>
-                <button className="delete-item visible" onClick={() => removeOutsource(o.id)} title="刪除">×</button>
+                <button className="delete-item visible" onClick={() => { if (confirm('確定刪除這筆外包？')) removeOutsource(o.id); }} title="刪除">×</button>
               </div>
             );
           })}
@@ -2722,7 +2776,7 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
             <button className={`card-action ${project.costsOpen ? 'on' : ''}`} onClick={() => onTogglePanel(project.id, 'costs')} title="財務細節">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v12M3.5 3.5h5a2 2 0 1 1 0 4h-3a2 2 0 1 0 0 4h5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>
             </button>
-            <button className="card-action danger" onClick={() => onDeleteProject(project.id)} title="移到垃圾桶（可從垃圾桶分頁復原）">
+            <button className="card-action danger" onClick={() => { if (confirm(`確定把「${project.title}」移到垃圾桶？`)) onDeleteProject(project.id); }} title="移到垃圾桶（可從垃圾桶分頁復原）">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 4h8M5.5 4V2.5a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1V4M4 4l.5 7a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1L10 4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
             </button>
           </>
@@ -3732,7 +3786,7 @@ function ExtraExpenseList({ series, expenses, customCategories, onChange, onUpda
                   {ex.confirmed ? '✓ 已確認' : '確認付款'}
                 </button>
               </div>
-              <button className="delete-item visible" onClick={() => deleteEntry(ex.id)} title="刪除">×</button>
+              <button className="delete-item visible" onClick={() => { if (confirm('確定刪除這筆額外支出？')) deleteEntry(ex.id); }} title="刪除">×</button>
             </div>
           );
         };
@@ -4601,7 +4655,7 @@ function App() {
 
 function Tracker({ session, onSignOut }) {
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
-  const [projects, setProjects] = useState([]);
+  const [projects, _setProjectsRaw] = useState([]);
   const [dataReady, setDataReady] = useState(false);
   const [loadError, setLoadError] = useState(null);
   const [tab, setTab] = useState('active'); // 'active' | 'archived'
@@ -4610,8 +4664,51 @@ function Tracker({ session, onSignOut }) {
   const [showHint, setShowHint] = useState(true);
   const [dragId, setDragId] = useState(null);
   const [dragOverId, setDragOverId] = useState(null);
-  const [globalSettings, setGlobalSettings] = useState(null); // null while loading
+  const [globalSettings, _setGlobalSettingsRaw] = useState(null);
   const [showCashSettings, setShowCashSettings] = useState(false);
+  // ── Undo 堆疊（最多 5 步，同時記錄 projects + globalSettings）──
+  const undoStackRef = useRef([]);
+  const undoProjectsRef = useRef([]);
+  const undoSettingsRef = useRef(null);
+  useEffect(() => { undoProjectsRef.current = projects; }, [projects]);
+  useEffect(() => { undoSettingsRef.current = globalSettings; }, [globalSettings]);
+  const dataReadyRef = useRef(false);
+  useEffect(() => { dataReadyRef.current = dataReady; }, [dataReady]);
+  const pushUndo = () => {
+    if (!dataReadyRef.current) return;
+    undoStackRef.current.push({
+      projects: JSON.parse(JSON.stringify(undoProjectsRef.current)),
+      settings: JSON.parse(JSON.stringify(undoSettingsRef.current || {}))
+    });
+    if (undoStackRef.current.length > 5) undoStackRef.current.shift();
+  };
+  const setProjects = (updater) => {
+    pushUndo();
+    _setProjectsRaw(updater);
+  };
+  const setGlobalSettings = (val) => {
+    pushUndo();
+    _setGlobalSettingsRaw(val);
+  };
+  const performUndo = () => {
+    if (undoStackRef.current.length === 0) return;
+    if (!confirm('確定要復原上一步操作嗎？')) return;
+    var prev = undoStackRef.current.pop();
+    _setProjectsRaw(prev.projects);
+    prev.projects.forEach(function(p) { saveProjectInDB(p); });
+    _setGlobalSettingsRaw(prev.settings);
+    saveUserSettings(prev.settings);
+  };
+  useEffect(() => {
+    var handler = function(e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        performUndo();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
   const [currentPage, setCurrentPage] = useState('projects'); // 'projects' | 'finance'
   const [sidebarOpen, setSidebarOpen] = useState(false); // 漢堡按鈕控制
 
@@ -4628,8 +4725,8 @@ function Tracker({ session, onSignOut }) {
   useEffect(() => {
     let cancelled = false;
     loadUserSettings()
-      .then(s => { if (!cancelled) setGlobalSettings(s || {}); })
-      .catch(() => { if (!cancelled) setGlobalSettings({}); });
+      .then(s => { if (!cancelled) _setGlobalSettingsRaw(s || {}); })
+      .catch(() => { if (!cancelled) _setGlobalSettingsRaw({}); });
     return () => { cancelled = true; };
   }, []);
 

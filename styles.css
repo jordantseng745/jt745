@@ -2149,6 +2149,98 @@ select.input {
   text-decoration: line-through;
   color: var(--text-3);
 }
+/* 子細項：點擊編輯 */
+.child-text-editable {
+  cursor: text;
+}
+.child-text-editable:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--text-4);
+  text-underline-offset: 2px;
+}
+.child-edit-input {
+  flex: 1;
+  font-size: 12.5px;
+  padding: 2px 6px;
+  min-width: 0;
+}
+/* 子細項：顏色標記 */
+.child-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.child-color-picker {
+  position: relative;
+}
+.child-color-btn {
+  appearance: none;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  opacity: 0.4;
+  transition: opacity 0.15s;
+}
+.child-color-btn:hover, .item-bar.child:hover .child-color-btn {
+  opacity: 1;
+}
+.child-color-none { color: var(--text-4); }
+.child-color-yellow { color: #f59e0b; opacity: 1; }
+.child-color-blue { color: #3b82f6; opacity: 1; }
+.child-color-menu {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 20;
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+}
+.child-color-option {
+  appearance: none;
+  border: 1.5px solid transparent;
+  background: none;
+  cursor: pointer;
+  font-size: 11px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.child-color-option.current {
+  border-color: var(--text);
+}
+.child-color-option.child-color-none { background: var(--bg-sunken, var(--border)); color: var(--text-3); }
+.child-color-option.child-color-yellow { background: #fef3c7; color: #b45309; }
+.child-color-option.child-color-blue { background: #dbeafe; color: #1d4ed8; }
+/* 子細項：整條變色 */
+.item-bar.child.child-color-yellow {
+  background: #fef9e7;
+  border-color: #fcd34d;
+}
+[data-theme="dark"] .item-bar.child.child-color-yellow {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+.item-bar.child.child-color-blue {
+  background: #eff6ff;
+  border-color: #93c5fd;
+}
+[data-theme="dark"] .item-bar.child.child-color-blue {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.35);
+}
 /* 階段層級的「X%」徽章 */
 .stage-pct-badge {
   display: inline-block;
