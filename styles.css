@@ -442,6 +442,456 @@ input, textarea { font-family: inherit; }
   }
 }
 
+/* ---------- 付款分頁 ---------- */
+.payments-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 8px 0 40px;
+}
+.pay-balance-bar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 20px 24px;
+  background: var(--text);
+  color: var(--bg);
+  border-radius: var(--radius);
+  flex-wrap: wrap;
+}
+.pay-balance-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pay-balance-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+.pay-balance-value {
+  font-family: var(--font-mono);
+  font-size: 32px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+.pay-balance-value.negative {
+  color: #fca5a5;
+}
+.pay-balance-hint {
+  font-size: 11px;
+  opacity: 0.5;
+  margin-top: 2px;
+}
+.pay-balance-bar .pay-export-btn {
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--bg) 40%, transparent);
+  color: var(--bg);
+}
+.pay-balance-bar .pay-export-btn:hover {
+  border-color: var(--bg);
+  background: color-mix(in srgb, var(--bg) 12%, transparent);
+}
+.pay-overview {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 18px 22px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  flex-wrap: wrap;
+}
+.pay-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 110px;
+}
+.pay-stat-label {
+  font-size: 11px;
+  color: var(--text-3);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.pay-stat-value {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.pay-stat-done .pay-stat-value { color: var(--stage-done, #10b981); }
+.pay-stat-active .pay-stat-value { color: var(--stage-active, #eab308); }
+.pay-stat-danger .pay-stat-value { color: var(--danger, #ef4444); }
+.pay-stat-warn-icon {
+  font-size: 14px;
+}
+.pay-export-btn {
+  margin-left: auto;
+  appearance: none;
+  background: none;
+  border: 1px solid var(--border);
+  padding: 8px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text-3);
+  transition: all 0.15s;
+}
+.pay-export-btn:hover {
+  border-color: var(--text-3);
+  color: var(--text);
+}
+@media (max-width: 640px) {
+  .pay-overview {
+    gap: 12px;
+    padding: 14px 16px;
+  }
+  .pay-stat { min-width: 90px; }
+  .pay-stat-value { font-size: 15px; }
+  .pay-export-btn { margin-left: 0; }
+}
+.payments-empty {
+  text-align: center;
+  padding: 80px 20px;
+  color: var(--text-3);
+}
+.payments-empty h3 {
+  font-size: 16px;
+  font-weight: 500;
+  margin: 0 0 8px;
+  color: var(--text);
+}
+.pay-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  overflow: hidden;
+}
+.pay-group-danger {
+  border-color: color-mix(in srgb, var(--danger, #ef4444) 50%, var(--border));
+  background: color-mix(in srgb, var(--danger, #ef4444) 5%, var(--bg-elev));
+}
+.pay-group-active {
+  border-color: color-mix(in srgb, var(--stage-active, #eab308) 50%, var(--border));
+}
+.pay-group-done {
+  border-color: color-mix(in srgb, var(--stage-done, #10b981) 30%, var(--border));
+}
+.pay-group-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 14px 18px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+}
+.pay-group-header:hover {
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+}
+.pay-group-header .chevron {
+  font-size: 11px;
+  color: var(--text-3);
+  width: 12px;
+}
+.pay-group-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.02em;
+}
+.pay-group-danger .pay-group-title {
+  color: var(--danger, #ef4444);
+}
+.pay-group-meta {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-3);
+  margin-left: auto;
+}
+.pay-group-body {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+}
+.pay-empty {
+  padding: 16px 18px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-4);
+}
+.pay-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 18px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.pay-row:last-child { border-bottom: none; }
+.pay-row:hover { background: color-mix(in srgb, var(--text) 2%, transparent); }
+.pay-row-paid {
+  background: color-mix(in srgb, var(--stage-done, #10b981) 4%, transparent);
+}
+.pay-row-main {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+.pay-row-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.pay-outsource-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pay-project-name {
+  font-size: 11px;
+  color: var(--text-3);
+  letter-spacing: 0.02em;
+}
+.pay-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.pay-amount {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+}
+.pay-date {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.pay-row-paid .pay-date {
+  color: var(--stage-done, #10b981);
+}
+.pay-overdue {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--danger, #ef4444);
+  padding: 2px 6px;
+  background: color-mix(in srgb, var(--danger, #ef4444) 12%, transparent);
+  border-radius: 4px;
+  white-space: nowrap;
+}
+/* 選取 checkbox */
+.pay-checkbox {
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  border: 1.5px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s, transform 0.08s;
+}
+.pay-checkbox:hover {
+  border-color: var(--text-3);
+  transform: scale(1.05);
+}
+.pay-checkbox.checked {
+  background: var(--text);
+  border-color: var(--text);
+}
+.pay-row-selected {
+  background: color-mix(in srgb, var(--info, #3b82f6) 6%, transparent) !important;
+}
+.pay-paid-marker {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: var(--stage-done, #10b981);
+  color: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+/* 撤銷按鈕 */
+.pay-undo-btn {
+  appearance: none;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-3);
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+.pay-undo-btn:hover {
+  border-color: var(--text-3);
+  color: var(--text);
+}
+.pay-undo-btn.confirming {
+  background: color-mix(in srgb, var(--danger, #ef4444) 12%, transparent);
+  border-color: var(--danger, #ef4444);
+  color: var(--danger, #ef4444);
+  font-weight: 600;
+}
+/* 浮動工具列 */
+.pay-floating-toolbar {
+  position: sticky;
+  bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 14px 22px;
+  background: var(--text);
+  color: var(--bg);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+  z-index: 80;
+  margin-top: 8px;
+  align-self: center;
+  max-width: 100%;
+}
+.pay-toolbar-info {
+  font-size: 14px;
+}
+.pay-toolbar-info strong {
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+.pay-toolbar-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+.pay-floating-toolbar .btn-ghost {
+  background: transparent;
+  color: var(--bg);
+  border: 1px solid color-mix(in srgb, var(--bg) 40%, transparent);
+}
+.pay-floating-toolbar .btn-ghost:hover {
+  background: color-mix(in srgb, var(--bg) 15%, transparent);
+}
+.pay-floating-toolbar .btn-primary {
+  background: var(--bg);
+  color: var(--text);
+  border: none;
+}
+.pay-floating-toolbar .btn-primary:hover {
+  background: color-mix(in srgb, var(--bg) 85%, var(--text-3));
+}
+/* 確認 Modal */
+.pay-confirm-modal {
+  max-width: 520px;
+}
+.pay-modal-date {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 0;
+}
+.pay-modal-date label {
+  font-size: 13px;
+  color: var(--text-3);
+}
+.pay-modal-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.pay-modal-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.pay-modal-row:last-child { border-bottom: none; }
+.pay-modal-row-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.pay-modal-remove {
+  appearance: none;
+  background: none;
+  border: 1px solid var(--border);
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  cursor: pointer;
+  color: var(--text-3);
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.pay-modal-remove:hover {
+  border-color: var(--danger, #ef4444);
+  color: var(--danger, #ef4444);
+}
+.pay-modal-total {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 12px 14px;
+  margin-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 14px;
+}
+.pay-modal-total strong {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 600;
+}
+@media (max-width: 640px) {
+  .pay-row-main {
+    grid-template-columns: 1fr;
+  }
+  .pay-row-meta { justify-content: flex-end; }
+  .pay-floating-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+}
+
 /* ---------- Extra expense simulator ---------- */
 .extra-expense-section { margin-top: 8px; }
 .page-section-header {

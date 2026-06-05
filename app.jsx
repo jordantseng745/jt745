@@ -181,6 +181,15 @@ const getOutsourcePayDate = (project) => {
   if (!last?.dueDate) return '';
   return addDays(last.dueDate, 5);
 };
+// 外包單筆「已付」狀態 helpers（向下相容：舊資料沒有這兩個欄位）
+// 「已付」= 你已經把錢從銀行轉出去了；「未付」= 還沒付，現金流圖用預估日
+const isOutsourcePaid = (o) => o?.paid === true;
+const getOutsourcePaidDate = (o) => (o?.paid && o?.paidDate) ? o.paidDate : '';
+// 某筆外包「實際入帳日期」：已付 → 用實際付款日；未付 → 用專案的預估付款日
+const getOutsourceEffectiveDate = (project, o) => {
+  if (isOutsourcePaid(o) && o.paidDate) return o.paidDate;
+  return getOutsourcePayDate(project);
+};
 // 雙月一期。一筆金流落在的「期」 + 該期繳稅日（下一期第一個月的 5 號）。
 //   5/15 → 5–6 月期，7/5 繳
 //   11/20 → 11–12 月期，隔年 1/5 繳
@@ -1866,15 +1875,22 @@ function buildCashflowSeries(projects, settings, horizonMonths = 12) {
       if (amt === 0) continue;
       events.push({ date: d, amount: amt, label: `${p.title} · ${pay.label}`, kind: 'income' });
     }
-    const outDate = getOutsourcePayDate(p);
-    if (outDate) {
-      const d = new Date(outDate);
-      if (!isNaN(d) && d >= start && d <= end) {
-        const outTotal = (p.outsources || []).reduce((a, o) => a + (Number(o.amount) || 0), 0);
-        if (outTotal > 0) {
-          events.push({ date: d, amount: -outTotal, label: `${p.title} · 外包付款`, kind: 'outsource' });
-        }
-      }
+    // 外包付款：每筆獨立成事件。已付用 paidDate（kind='outsource-paid'），未付用 outsourcePayDate（kind='outsource'）
+    for (const o of (p.outsources || [])) {
+      const amt = Number(o.amount) || 0;
+      if (amt === 0) continue;
+      const paid = isOutsourcePaid(o);
+      const dateStr = paid ? (o.paidDate || '') : getOutsourcePayDate(p);
+      if (!dateStr) continue;
+      const d = new Date(dateStr);
+      if (isNaN(d) || d < start || d > end) continue;
+      const roleLabel = o.name || '外包';
+      events.push({
+        date: d,
+        amount: -amt,
+        label: paid ? `${p.title} · ${roleLabel}（已付）` : `${p.title} · ${roleLabel}（預估）`,
+        kind: paid ? 'outsource-paid' : 'outsource',
+      });
     }
   }
 
@@ -1922,18 +1938,17 @@ function buildCashflowSeries(projects, settings, horizonMonths = 12) {
         ensureVatPeriod(info).salesVAT += amt * 0.05 / 1.05;
       }
     }
-    const outDateForVAT = getOutsourcePayDate(p);
-    if (outDateForVAT) {
-      const d = new Date(outDateForVAT);
-      if (!isNaN(d)) {
-        const taxableInput = (p.outsources || [])
-          .filter(o => o.taxable)
-          .reduce((sum, o) => sum + (Number(o.amount) || 0) * 0.05, 0);
-        if (taxableInput > 0) {
-          const info = vatPeriodInfo(d);
-          if (info) ensureVatPeriod(info).inputVAT += taxableInput;
-        }
-      }
+    // 進項稅扣抵：每筆 taxable outsource 用「實際入帳日」決定稅期（已付用 paidDate，未付用 outsourcePayDate）
+    for (const o of (p.outsources || [])) {
+      if (!o.taxable) continue;
+      const amt = Number(o.amount) || 0;
+      if (amt <= 0) continue;
+      const dateStr = isOutsourcePaid(o) ? (o.paidDate || '') : getOutsourcePayDate(p);
+      if (!dateStr) continue;
+      const d = new Date(dateStr);
+      if (isNaN(d)) continue;
+      const info = vatPeriodInfo(d);
+      if (info) ensureVatPeriod(info).inputVAT += amt * 0.05;
     }
   }
   const sortedVatPeriods = [...vatPeriods.values()].sort((a, b) => a.dueDate - b.dueDate);
@@ -2102,17 +2117,34 @@ function buildCalendarEvents(projects) {
       });
     }
 
-    // Outsource payment (outgoing money)
+    // Outsource payments (outgoing money) — paid status aware
+    // 未付的外包合併成一個事件（共用 outsourcePayDate）；已付的每筆獨立事件（落在各自的 paidDate）
+    const unpaidOutsources = (p.outsources || []).filter(o => !isOutsourcePaid(o));
+    const unpaidTotal = unpaidOutsources.reduce((a, o) => a + (Number(o.amount) || 0), 0);
     const outDate = getOutsourcePayDate(p);
-    const outTotal = (p.outsources || []).reduce((a, o) => a + (Number(o.amount) || 0), 0);
-    if (outDate && outTotal > 0) {
+    if (outDate && unpaidTotal > 0) {
       events.push({
         date: outDate,
         kind: 'payment-out',
         projectId: p.id,
         projectTitle: p.title,
-        label: '外包付款',
-        amount: outTotal,
+        label: unpaidOutsources.length > 1 ? `外包付款（預估，${unpaidOutsources.length} 筆）` : '外包付款（預估）',
+        amount: unpaidTotal,
+      });
+    }
+    // 已付的外包：每筆一個事件
+    for (const o of (p.outsources || [])) {
+      if (!isOutsourcePaid(o)) continue;
+      const amt = Number(o.amount) || 0;
+      if (amt === 0 || !o.paidDate) continue;
+      events.push({
+        date: o.paidDate,
+        kind: 'payment-out-paid',
+        projectId: p.id,
+        projectTitle: p.title,
+        outsourceId: o.id,
+        label: (o.name || '外包') + '（已付）',
+        amount: amt,
       });
     }
   }
@@ -2170,7 +2202,15 @@ function patchForCalendarEvent(project, eventInfo, newDate) {
         payments: getPayments(project).map(p => p.id === paymentId ? { ...p, dueDate: newDate } : p),
       };
     case 'payment-out':
+      // 未付合併事件 → 改 outsourcePayDate（所有未付的外包跟著移動）
       return { outsourcePayDate: newDate };
+    case 'payment-out-paid':
+      // 已付單筆 → 改該筆的 paidDate
+      return {
+        outsources: (project.outsources || []).map(o =>
+          o.id === eventInfo.outsourceId ? { ...o, paidDate: newDate } : o
+        ),
+      };
     default:
       return null;
   }
@@ -2242,12 +2282,14 @@ function buildExportData(allProjects, settings) {
         "預計收款日": pay.dueDate || null,
         "金額": Math.round((Number(p.budget) || 0) * (Number(pay.percentage) || 0) / 100),
       })),
-      "外包付款日": getOutsourcePayDate(p) || null,
+      "外包預估付款日": getOutsourcePayDate(p) || null,
       "外包明細": (p.outsources || []).map(o => ({
         "項目": o.name || '(未命名)',
         "類型": o.type === 'company' ? '公司' : '個人',
         "金額": Number(o.amount) || 0,
         "可抵稅": !!o.taxable,
+        "已付": isOutsourcePaid(o),
+        "實付日": isOutsourcePaid(o) ? (o.paidDate || null) : null,
       })),
       "階段細節": p.stages.map(s => ({
         "階段": s.label,
@@ -2281,7 +2323,8 @@ function buildExportData(allProjects, settings) {
         "事件": pt.label,
         "類型": pt.kind === 'income' ? '收入'
               : pt.kind === 'fixed' ? '每月固定支出'
-              : pt.kind === 'outsource' ? '外包付款'
+              : pt.kind === 'outsource' ? '外包付款（預估）'
+              : pt.kind === 'outsource-paid' ? '外包付款（已付）'
               : pt.kind === 'extra' ? '額外支出'
               : pt.kind,
         "進出帳": pt.amount,
@@ -2493,7 +2536,7 @@ function CostPanel({ project, onUpdate, fixedCostShare, overtimeShare, monthlyFi
   const [detailsOpen, setDetailsOpen] = useState(true);
 
   const addOutsource = () => {
-    update({ outsources: [...(project.outsources || []), { id: uid('o'), name: '', type: 'company', amount: 0, taxable: true }] });
+    update({ outsources: [...(project.outsources || []), { id: uid('o'), name: '', type: 'company', amount: 0, taxable: true, paid: false, paidDate: null }] });
   };
   const updateOutsource = (id, patch) => {
     update({ outsources: project.outsources.map(o => o.id === id ? { ...o, ...patch } : o) });
@@ -3225,7 +3268,8 @@ function CashflowChart({ series, viewMode = 'overview' }) {
     const dotColor = (kind) => {
       if (kind === 'income') return '#10b981';
       if (kind === 'fixed') return '#ef4444';
-      if (kind === 'outsource') return '#f59e0b';
+      if (kind === 'outsource') return '#fbbf24'; // 未付：淡橙黃（預估）
+      if (kind === 'outsource-paid') return '#f59e0b'; // 已付：實心橙
       if (kind === 'extra') return '#8b5cf6';
       if (kind === 'vat') return '#92400e';
       return textColor; // start/end uses current text colour
@@ -3307,10 +3351,11 @@ function CashflowChart({ series, viewMode = 'overview' }) {
         return best.kind;
       };
       const kindFillColor = (kind) => {
-        if (kind === 'fixed')     return 'rgba(239, 68, 68, 0.30)';  // 紅
-        if (kind === 'outsource') return 'rgba(245, 158, 11, 0.30)'; // 橙
-        if (kind === 'extra')     return 'rgba(139, 92, 246, 0.30)'; // 紫
-        if (kind === 'vat')       return 'rgba(146, 64, 14, 0.30)';  // 棕
+        if (kind === 'fixed')            return 'rgba(239, 68, 68, 0.30)';  // 紅
+        if (kind === 'outsource')        return 'rgba(251, 191, 36, 0.20)'; // 淡橙黃（未付，半透明）
+        if (kind === 'outsource-paid')   return 'rgba(245, 158, 11, 0.40)'; // 橙（已付）
+        if (kind === 'extra')            return 'rgba(139, 92, 246, 0.30)'; // 紫
+        if (kind === 'vat')              return 'rgba(146, 64, 14, 0.30)';  // 棕
         return 'rgba(239, 68, 68, 0.26)';
       };
       datasets.push({
@@ -3545,6 +3590,7 @@ function Sidebar({ currentPage, onChange, counts }) {
   const items = [
     { id: 'projects', label: '專案',   count: counts.projects },
     { id: 'finance',  label: '財務',   count: null },
+    { id: 'payments', label: '付款',   count: counts.unpaidOutsources },
     { id: 'calendar', label: '行事曆', count: null },
   ];
   return (
@@ -3849,7 +3895,8 @@ const CAL_KIND_META = {
   'item-due':    { color: '#8b5cf6', emoji: '●',  name: '細項結束 / 交付' },
   'item-span':   { color: '#8b5cf6', emoji: '▭',  name: '細項區間' },
   'payment-in':  { color: '#16a34a', emoji: '💰', name: '收款' },
-  'payment-out': { color: '#f59e0b', emoji: '💸', name: '外包付款' },
+  'payment-out':      { color: '#fbbf24', emoji: '💸', name: '外包付款（預估）' },
+  'payment-out-paid': { color: '#f59e0b', emoji: '✓',  name: '外包付款（已付）' },
 };
 
 function CalendarPage({ projects, onMoveEvent, onResizeStage }) {
@@ -4502,6 +4549,417 @@ function FixedCostBreakdownSection({ projects, monthlyFixed }) {
   );
 }
 
+// ---------- 付款分頁（外包付款狀態追蹤） ----------
+// 把所有非刪除專案的外包扁平化成一張列表，按狀態 + 月份分組。
+// Step 2：只顯示列表（不能打勾）；Step 3 才會加 checkbox + Modal 確認；Step 5 才會加概覽列、逾期警示。
+function buildPaymentRows(projects) {
+  var today = new Date(TODAY); today.setHours(0, 0, 0, 0);
+  var rows = [];
+  (projects || []).forEach(function(p) {
+    if (p.deleted) return;
+    (p.outsources || []).forEach(function(o) {
+      if (!o || (Number(o.amount) || 0) === 0) return;
+      var paid = isOutsourcePaid(o);
+      var effDate = paid ? (o.paidDate || '') : getOutsourcePayDate(p);
+      var dateObj = effDate ? new Date(effDate) : null;
+      if (dateObj) dateObj.setHours(0, 0, 0, 0);
+      var bucket;
+      if (paid) {
+        bucket = 'paid';
+      } else if (!dateObj || isNaN(dateObj)) {
+        bucket = 'undated';
+      } else if (dateObj < today) {
+        bucket = 'overdue';
+      } else {
+        var sameMonth = dateObj.getFullYear() === today.getFullYear() && dateObj.getMonth() === today.getMonth();
+        var nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+        var sameNextMonth = dateObj.getFullYear() === nextMonth.getFullYear() && dateObj.getMonth() === nextMonth.getMonth();
+        if (sameMonth) bucket = 'thisMonth';
+        else if (sameNextMonth) bucket = 'nextMonth';
+        else bucket = 'future';
+      }
+      rows.push({
+        projectId: p.id,
+        projectTitle: p.title,
+        outsourceId: o.id,
+        outsourceName: o.name || '（未命名）',
+        outsourceRole: o.name || '',
+        type: o.type || 'company',
+        amount: Number(o.amount) || 0,
+        paid: paid,
+        paidDate: paid ? (o.paidDate || '') : null,
+        predictedDate: getOutsourcePayDate(p),
+        effDate: effDate,
+        daysOverdue: (!paid && dateObj && dateObj < today) ? Math.round((today - dateObj) / 86400000) : 0,
+        bucket: bucket,
+      });
+    });
+  });
+  return rows;
+}
+
+function rowKey(r) { return r.projectId + '_' + r.outsourceId; }
+
+// 算到今天為止的現金餘額：從起算日餘額開始，套用所有日期 ≤ 今天的事件
+// 用 buildCashflowSeries 已經算好的 running balance（points 陣列），找最後一個 date ≤ 今天的 point
+function computeTodayBalance(projects, settings) {
+  if (!settings || (Number(settings.bankBalance) || 0) === 0 && !settings.startDate) return null;
+  var series = buildCashflowSeries(projects || [], settings, 12);
+  var today = new Date(TODAY); today.setHours(0, 0, 0, 0);
+  var balance = series.startBalance;
+  // points 是已按時間排序的（含每個事件後的 balance）
+  for (var i = 0; i < series.points.length; i++) {
+    var pt = series.points[i];
+    var d = new Date(pt.date); d.setHours(0, 0, 0, 0);
+    if (d > today) break;
+    balance = pt.balance;
+  }
+  return balance;
+}
+
+function PaymentsPage({ projects, settings, onUpdateProject, onBatchUpdateProjects }) {
+  var [selected, setSelected] = useState({}); // { [rowKey]: true }
+  var [modalRows, setModalRows] = useState(null); // 開 modal 時暫存的列表
+  var [undoConfirming, setUndoConfirming] = useState(null); // 撤銷的兩步驟確認：rowKey | null
+
+  // 目前現金餘額（即時更新：勾選確認付款後會立刻反映）
+  var todayBalance = useMemo(function() { return computeTodayBalance(projects, settings); }, [projects, settings]);
+
+  var allRows = useMemo(function() { return buildPaymentRows(projects); }, [projects]);
+  var groups = useMemo(function() {
+    var g = { overdue: [], thisMonth: [], nextMonth: [], future: [], undated: [], paid: [] };
+    allRows.forEach(function(r) { g[r.bucket].push(r); });
+    ['overdue', 'thisMonth', 'nextMonth', 'future'].forEach(function(k) {
+      g[k].sort(function(a, b) { return (a.effDate || '').localeCompare(b.effDate || ''); });
+    });
+    g.paid.sort(function(a, b) { return (b.paidDate || '').localeCompare(a.paidDate || ''); });
+    return g;
+  }, [allRows]);
+
+  // 自動清除已不存在的選取（例如 row 已被付款）
+  useEffect(function() {
+    var validKeys = {};
+    allRows.forEach(function(r) { if (!r.paid) validKeys[rowKey(r)] = true; });
+    setSelected(function(prev) {
+      var next = {};
+      var changed = false;
+      Object.keys(prev).forEach(function(k) {
+        if (validKeys[k]) next[k] = true;
+        else changed = true;
+      });
+      return changed ? next : prev;
+    });
+  }, [allRows]);
+
+  var selectedCount = Object.keys(selected).length;
+  var selectedRows = allRows.filter(function(r) { return selected[rowKey(r)]; });
+  var selectedTotal = selectedRows.reduce(function(s, r) { return s + r.amount; }, 0);
+
+  var toggleSelect = function(r) {
+    var k = rowKey(r);
+    setSelected(function(prev) {
+      var next = Object.assign({}, prev);
+      if (next[k]) delete next[k]; else next[k] = true;
+      return next;
+    });
+  };
+  var clearSelection = function() { setSelected({}); };
+
+  var openConfirmModal = function() {
+    if (selectedRows.length === 0) return;
+    setModalRows(selectedRows.slice());
+  };
+  var closeModal = function() { setModalRows(null); };
+
+  // 真正寫入：把選取的外包標記為已付
+  var commitPayment = function(rows, paidDate) {
+    var patches = {}; // projectId -> { outsources: [...] }
+    rows.forEach(function(r) {
+      var p = projects.find(function(x) { return x.id === r.projectId; });
+      if (!p) return;
+      if (!patches[r.projectId]) {
+        patches[r.projectId] = { outsources: (p.outsources || []).map(function(o) { return Object.assign({}, o); }) };
+      }
+    });
+    rows.forEach(function(r) {
+      var patch = patches[r.projectId];
+      if (!patch) return;
+      patch.outsources = patch.outsources.map(function(o) {
+        return o.id === r.outsourceId ? Object.assign({}, o, { paid: true, paidDate: paidDate }) : o;
+      });
+    });
+    onBatchUpdateProjects(patches);
+    clearSelection();
+    closeModal();
+  };
+
+  // 單筆撤銷已付（兩步驟確認）
+  var requestUndoPaid = function(r) {
+    var k = rowKey(r);
+    if (undoConfirming === k) {
+      // 第二次點擊 → 真的撤銷
+      var p = projects.find(function(x) { return x.id === r.projectId; });
+      if (!p) { setUndoConfirming(null); return; }
+      var newOutsources = (p.outsources || []).map(function(o) {
+        return o.id === r.outsourceId ? Object.assign({}, o, { paid: false, paidDate: null }) : o;
+      });
+      onUpdateProject(r.projectId, { outsources: newOutsources });
+      setUndoConfirming(null);
+    } else {
+      setUndoConfirming(k);
+      // 3 秒沒按第二次就取消
+      setTimeout(function() {
+        setUndoConfirming(function(prev) { return prev === k ? null : prev; });
+      }, 3000);
+    }
+  };
+
+  // 概覽列數字
+  var sumOf = function(arr) { return arr.reduce(function(s, r) { return s + r.amount; }, 0); };
+  var monthRows = groups.overdue.concat(groups.thisMonth);
+  var monthDue = sumOf(monthRows);
+  var monthPaid = sumOf(groups.paid.filter(function(r) {
+    if (!r.paidDate) return false;
+    var d = new Date(r.paidDate);
+    return d.getFullYear() === TODAY.getFullYear() && d.getMonth() === TODAY.getMonth();
+  }));
+  var monthPending = sumOf(groups.thisMonth);
+  var overdueAmt = sumOf(groups.overdue);
+
+  // 匯出本月付款明細
+  var handleExport = function() {
+    var rows = monthRows.concat(groups.paid.filter(function(r) {
+      if (!r.paidDate) return false;
+      var d = new Date(r.paidDate);
+      return d.getFullYear() === TODAY.getFullYear() && d.getMonth() === TODAY.getMonth();
+    }));
+    var payload = {
+      _說明: '這是本月付款明細快照。已付的金額會從銀行扣款；未付的是預估付款日。',
+      月份: (TODAY.getFullYear()) + '-' + String(TODAY.getMonth() + 1).padStart(2, '0'),
+      本月應付: monthDue,
+      本月已付: monthPaid,
+      本月待付: monthPending,
+      逾期待付: overdueAmt,
+      明細: rows.map(function(r) {
+        return {
+          專案: r.projectTitle,
+          外包: r.outsourceName,
+          類型: r.type === 'company' ? '公司' : '個人',
+          金額: r.amount,
+          狀態: r.paid ? '已付' : (r.daysOverdue > 0 ? '逾期 ' + r.daysOverdue + ' 天' : '待付'),
+          日期: r.paid ? r.paidDate : (r.effDate ? '預估 ' + r.effDate : '無'),
+        };
+      }),
+    };
+    var dateStr = toISODate(TODAY);
+    downloadJSON(payload, 'jt745-payments-' + dateStr + '.json');
+  };
+
+  if (allRows.length === 0) {
+    return (
+      <section className="payments-page">
+        <div className="payments-empty">
+          <h3>還沒有外包項目</h3>
+          <p className="muted">在任一專案的「成本面板」新增外包後，會自動出現在這裡。</p>
+        </div>
+      </section>
+    );
+  }
+
+  var groupProps = {
+    selected: selected,
+    onToggleSelect: toggleSelect,
+    undoConfirming: undoConfirming,
+    onRequestUndoPaid: requestUndoPaid,
+  };
+
+  return (
+    <section className="payments-page">
+      <div className="pay-balance-bar">
+        <div className="pay-balance-left">
+          <span className="pay-balance-label">目前現金餘額</span>
+          <span className={'pay-balance-value' + (todayBalance != null && todayBalance < 0 ? ' negative' : '')}>
+            {todayBalance != null ? fmtNT(Math.round(todayBalance)) : '—'}
+          </span>
+          <span className="pay-balance-hint">已實現（含 ≤ 今天的所有收支）</span>
+        </div>
+        <button className="pay-export-btn" onClick={handleExport} title="匯出本月付款明細給 Claude 對帳">📥 匯出</button>
+      </div>
+      <div className="pay-overview">
+        <PayStat label="本月應付" value={monthDue} />
+        <PayStat label="本月已付" value={monthPaid} accent="done" />
+        <PayStat label="本月待付" value={monthPending} accent={monthPending > 0 ? 'active' : 'muted'} />
+        {overdueAmt > 0 && <PayStat label="逾期" value={overdueAmt} accent="danger" warn={true} />}
+      </div>
+
+      <PaymentGroup title="逾期待付" rows={groups.overdue} emptyHide={true} accent="danger" showDays={true} {...groupProps} />
+      <PaymentGroup title="本月待付" rows={groups.thisMonth} emptyHide={false} accent="active" {...groupProps} />
+      <PaymentGroup title="下月待付" rows={groups.nextMonth} emptyHide={true} accent="muted" {...groupProps} />
+      <PaymentGroup title="未來待付" rows={groups.future} emptyHide={true} accent="muted" {...groupProps} />
+      {groups.undated.length > 0 && (
+        <PaymentGroup title="未排程（缺尾款日）" rows={groups.undated} emptyHide={false} accent="muted" {...groupProps} />
+      )}
+      <PaymentGroup title="已付" rows={groups.paid} emptyHide={true} accent="done" defaultCollapsed={true} {...groupProps} />
+
+      {selectedCount > 0 && (
+        <div className="pay-floating-toolbar">
+          <span className="pay-toolbar-info">已選取 <strong>{selectedCount}</strong> 筆 · 合計 <strong>{fmtNT(selectedTotal)}</strong></span>
+          <div className="pay-toolbar-actions">
+            <button className="btn btn-ghost" onClick={clearSelection}>取消選取</button>
+            <button className="btn btn-primary" onClick={openConfirmModal}>確認付款 →</button>
+          </div>
+        </div>
+      )}
+
+      {modalRows && (
+        <ConfirmPaymentModal
+          rows={modalRows}
+          onCancel={closeModal}
+          onConfirm={commitPayment}
+          onRemoveRow={(r) => setModalRows(function(prev) { return prev.filter(function(x) { return rowKey(x) !== rowKey(r); }); })}
+        />
+      )}
+    </section>
+  );
+}
+
+function PaymentGroup({ title, rows, emptyHide, accent, showDays, defaultCollapsed, selected, onToggleSelect, undoConfirming, onRequestUndoPaid }) {
+  var [collapsed, setCollapsed] = useState(!!defaultCollapsed);
+  if (emptyHide && rows.length === 0) return null;
+  var total = rows.reduce(function(s, r) { return s + r.amount; }, 0);
+  return (
+    <div className={'pay-group pay-group-' + (accent || 'muted')}>
+      <button className="pay-group-header" onClick={() => setCollapsed(c => !c)} type="button">
+        <span className="chevron">{collapsed ? '▸' : '▾'}</span>
+        <span className="pay-group-title">{title}</span>
+        <span className="pay-group-meta">{rows.length} 筆 · {fmtNT(total)}</span>
+      </button>
+      {!collapsed && (
+        <div className="pay-group-body">
+          {rows.length === 0 ? (
+            <div className="pay-empty">無</div>
+          ) : (
+            rows.map(function(r) {
+              var k = rowKey(r);
+              return (
+                <PaymentRow
+                  key={k}
+                  row={r}
+                  showDays={showDays}
+                  isSelected={!!(selected && selected[k])}
+                  onToggleSelect={onToggleSelect}
+                  undoConfirming={undoConfirming === k}
+                  onRequestUndoPaid={onRequestUndoPaid}
+                />
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PaymentRow({ row, showDays, isSelected, onToggleSelect, undoConfirming, onRequestUndoPaid }) {
+  var dateLabel = row.paid
+    ? '已付 ' + row.paidDate
+    : (row.effDate ? '預估 ' + row.effDate : '無預估日');
+  return (
+    <div className={'pay-row' + (row.paid ? ' pay-row-paid' : '') + (isSelected ? ' pay-row-selected' : '')}>
+      {!row.paid && (
+        <button
+          className={'pay-checkbox' + (isSelected ? ' checked' : '')}
+          onClick={() => onToggleSelect(row)}
+          type="button"
+          title={isSelected ? '取消選取' : '選取（之後一次確認）'}
+        >
+          {isSelected ? '✓' : ''}
+        </button>
+      )}
+      {row.paid && <span className="pay-paid-marker" title="已付清">✓</span>}
+      <div className="pay-row-main">
+        <div className="pay-row-name">
+          <span className="pay-outsource-name">{row.outsourceName}</span>
+          <span className="pay-project-name">{row.projectTitle}</span>
+        </div>
+        <div className="pay-row-meta">
+          <span className="pay-amount">{fmtNT(row.amount)}</span>
+          <span className="pay-date">{dateLabel}</span>
+          {showDays && row.daysOverdue > 0 && (
+            <span className="pay-overdue">逾期 {row.daysOverdue} 天</span>
+          )}
+          {row.paid && (
+            <button
+              className={'pay-undo-btn' + (undoConfirming ? ' confirming' : '')}
+              onClick={() => onRequestUndoPaid(row)}
+              type="button"
+              title={undoConfirming ? '再按一次確認撤銷' : '撤銷已付狀態'}
+            >
+              {undoConfirming ? '確認撤銷？' : '↺'}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PayStat({ label, value, accent, warn }) {
+  return (
+    <div className={'pay-stat pay-stat-' + (accent || 'default') + (warn ? ' pay-stat-warn' : '')}>
+      <span className="pay-stat-label">{label}</span>
+      <span className="pay-stat-value">{fmtNT(value)}{warn && <span className="pay-stat-warn-icon">⚠</span>}</span>
+    </div>
+  );
+}
+
+function ConfirmPaymentModal({ rows, onCancel, onConfirm, onRemoveRow }) {
+  var todayISO = toISODate(TODAY);
+  var [date, setDate] = useState(todayISO);
+  var total = rows.reduce(function(s, r) { return s + r.amount; }, 0);
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal pay-confirm-modal" onClick={(e) => e.stopPropagation()}>
+        <h2 className="modal-title">確認以下 {rows.length} 筆已付？</h2>
+        <div className="pay-modal-date">
+          <label>付款日期</label>
+          <input type="date" className="date-input" value={date} onChange={(e) => setDate(e.target.value)} />
+        </div>
+        <div className="pay-modal-list">
+          {rows.map(function(r) {
+            return (
+              <div key={rowKey(r)} className="pay-modal-row">
+                <div className="pay-modal-row-name">
+                  <span className="pay-outsource-name">{r.outsourceName}</span>
+                  <span className="pay-project-name">{r.projectTitle}</span>
+                </div>
+                <span className="pay-amount">{fmtNT(r.amount)}</span>
+                {rows.length > 1 && (
+                  <button className="pay-modal-remove" onClick={() => onRemoveRow(r)} type="button" title="從本次確認中移除（不取消勾選）">×</button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <div className="pay-modal-total">
+          <span>合計</span>
+          <strong>{fmtNT(total)}</strong>
+        </div>
+        <div className="modal-actions">
+          <button className="btn btn-ghost" onClick={onCancel}>取消</button>
+          <button
+            className="btn btn-primary"
+            disabled={rows.length === 0 || !date}
+            onClick={() => onConfirm(rows, date)}
+          >
+            全部確認已付
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdateExtraExpenses, onUpdateCustomCategories }) {
   const handleExport = () => {
     const data = buildExportData(allProjects || projects, settings || {});
@@ -4709,7 +5167,7 @@ function Tracker({ session, onSignOut }) {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, []);
-  const [currentPage, setCurrentPage] = useState('projects'); // 'projects' | 'finance'
+  const [currentPage, setCurrentPage] = useState('projects'); // 'projects' | 'finance' | 'payments' | 'calendar'
   const [sidebarOpen, setSidebarOpen] = useState(false); // 漢堡按鈕控制
 
   // Load projects from Supabase on mount
@@ -4845,6 +5303,19 @@ function Tracker({ session, onSignOut }) {
       const next = prev.map(p => p.id === id ? { ...p, ...patch } : p);
       const changed = next.find(p => p.id === id);
       if (changed) saveProjectInDB(changed);
+      return next;
+    });
+  };
+  // 批次更新：一次改多個專案，只壓一筆 undo 紀錄。
+  // patches: { [projectId]: patchObject }
+  const onBatchUpdateProjects = (patches) => {
+    setProjects(prev => {
+      const next = prev.map(p => patches[p.id] ? { ...p, ...patches[p.id] } : p);
+      // 樂觀寫入：只存有變動的專案
+      Object.keys(patches).forEach(pid => {
+        const changed = next.find(p => p.id === pid);
+        if (changed) saveProjectInDB(changed);
+      });
       return next;
     });
   };
@@ -5135,7 +5606,10 @@ function Tracker({ session, onSignOut }) {
         <Sidebar
           currentPage={currentPage}
           onChange={(p) => { setCurrentPage(p); setSidebarOpen(false); }}
-          counts={{ projects: activeProjects.length }}
+          counts={{
+            projects: activeProjects.length,
+            unpaidOutsources: activeProjects.reduce((n, p) => n + (p.outsources || []).filter(o => !isOutsourcePaid(o)).length, 0) || null,
+          }}
         />
 
         <main className="app-main">
@@ -5250,6 +5724,15 @@ function Tracker({ session, onSignOut }) {
               onOpenSettings={() => setShowCashSettings(true)}
               onUpdateExtraExpenses={onUpdateExtraExpenses}
               onUpdateCustomCategories={onUpdateCustomCategories}
+            />
+          )}
+
+          {currentPage === 'payments' && (
+            <PaymentsPage
+              projects={activeProjects}
+              settings={globalSettings || {}}
+              onUpdateProject={onUpdateProject}
+              onBatchUpdateProjects={onBatchUpdateProjects}
             />
           )}
 
