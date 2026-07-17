@@ -2045,6 +2045,188 @@ input, textarea { font-family: inherit; }
 .countdown.warn .countdown-label {
   color: var(--warn);
 }
+/* 名言起始畫面：每天第一次打開時全螢幕顯示，淡出回到專案畫面 */
+.quote-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  opacity: 1;
+  transition: opacity 0.45s ease;
+  cursor: pointer;
+}
+.quote-splash.closing { opacity: 0; pointer-events: none; }
+.quote-splash-inner {
+  max-width: 620px;
+  text-align: center;
+  animation: quote-splash-in 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+  cursor: default;
+}
+@keyframes quote-splash-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+.quote-splash-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-bottom: 22px;
+}
+.quote-splash-text {
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 1.65;
+  letter-spacing: 0.01em;
+  color: var(--text);
+}
+.quote-splash-author {
+  margin-top: 18px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-3);
+}
+.quote-splash-btn { margin-top: 34px; }
+@media (prefers-reduced-motion: reduce) {
+  .quote-splash, .quote-splash-inner { transition: none; animation: none; }
+}
+
+/* 戰績列：已結案專案的累積成就——要有「一直在為你歡呼」的感覺 */
+.trophy-strip {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 22px;
+  padding: 14px 20px;
+  border: 1px solid color-mix(in srgb, var(--stage-done, #10b981) 45%, var(--border));
+  border-radius: 12px;
+  background: linear-gradient(120deg,
+    color-mix(in srgb, var(--stage-done, #10b981) 11%, transparent),
+    color-mix(in srgb, #eab308 10%, transparent) 55%,
+    color-mix(in srgb, var(--stage-done, #10b981) 9%, transparent));
+  box-shadow: 0 1px 10px color-mix(in srgb, var(--stage-done, #10b981) 12%, transparent);
+  font-size: 13px;
+  color: var(--text);
+}
+/* 獎盃反光：一道光帶每幾秒掃過 */
+.trophy-strip::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -90px;
+  width: 70px;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  transform: skewX(-18deg);
+  animation: trophy-shine 5s ease-in-out infinite;
+  pointer-events: none;
+}
+[data-theme=dark] .trophy-strip::after {
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.14), transparent);
+}
+@keyframes trophy-shine {
+  0%   { left: -90px; }
+  45%  { left: calc(100% + 40px); }
+  100% { left: calc(100% + 40px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .trophy-strip::after { animation: none; display: none; }
+}
+.trophy-strip .trophy-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--stage-done, #10b981);
+  font-weight: 700;
+  margin-right: 6px;
+}
+.trophy-strip .trophy-item strong {
+  font-variant-numeric: tabular-nums;
+  color: var(--stage-done, #10b981);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.trophy-strip .trophy-item.saved,
+.trophy-strip .trophy-item.saved strong { color: var(--stage-done, #10b981); }
+.trophy-strip .sep { color: var(--text-4, var(--text-3)); }
+
+/* 詳細資訊裡的交件結果 */
+.meta-value.result-early { color: var(--stage-done, #10b981); font-weight: 600; }
+.meta-value.result-late { color: var(--overtime, #f97316); font-weight: 600; }
+
+/* 提前完成：卡片小字 + 階段面板徽章 */
+.early-note {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.03em;
+  color: var(--stage-done, #10b981);
+  margin-top: 2px;
+}
+.early-badge {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: var(--stage-done, #10b981);
+  border: 1px solid color-mix(in srgb, var(--stage-done, #10b981) 35%, var(--border));
+  background: color-mix(in srgb, var(--stage-done, #10b981) 7%, transparent);
+  border-radius: 999px;
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+
+/* 「距上次打開」變化摘要橫幅 */
+.delta-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 0 0 16px;
+  padding: 10px 16px;
+  border: 1px solid color-mix(in srgb, var(--stage-done, #10b981) 28%, var(--border));
+  background: color-mix(in srgb, var(--stage-done, #10b981) 6%, transparent);
+  border-radius: 10px;
+  font-size: 13px;
+  color: var(--text-2, var(--text));
+}
+.delta-banner .delta-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.delta-banner .delta-item strong {
+  color: var(--stage-done, #10b981);
+  font-variant-numeric: tabular-nums;
+}
+.delta-dismiss {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: var(--text-3);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.delta-dismiss:hover { color: var(--text); }
+
+/* 完成狀態：綠色「✓ 已完成」，取代逾期倒數 */
+.countdown.done .countdown-num,
+.countdown.done .countdown-num .unit,
+.countdown.done .done-check { color: var(--stage-done, #10b981); }
+.done-check { font-weight: 600; }
 /* 延長賽（專案延期）：橘色，優先於緊急紅 */
 .countdown.overtime .countdown-num { color: var(--overtime); }
 .countdown.overtime .countdown-label,
@@ -2122,6 +2304,13 @@ input, textarea { font-family: inherit; }
 .stage-bar.variant-bar .segment.shrunk { flex: 0.4; padding: 0 8px; }
 .stage-bar.variant-bar .segment.shrunk .seg-label { display: none; }
 .stage-bar.variant-bar .segment.expanded { flex: 1.4; }
+/* 權重寬度時代：進行中的階段再窄（例如「交件收款」只佔 5%）也要放得下自己的標籤 */
+.stage-bar.variant-bar .segment.expanded { min-width: fit-content; }
+.stage-bar.variant-bar .seg-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .stage-bar.variant-bar > .segment:nth-child(2) { border-radius: 999px 4px 4px 999px; padding-left: 16px; }
 .stage-bar.variant-bar > .segment:nth-last-child(2) { border-radius: 4px 999px 999px 4px; padding-right: 16px; }
 .stage-bar.variant-bar > .segment:nth-child(2):nth-last-child(2) { border-radius: 999px; }

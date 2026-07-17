@@ -6,9 +6,12 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
 //   items     — default items shown when a project is created
 //   altItems  — optional / case-by-case items the user can pick from a dropdown
 //               to re-add after deleting, or to add for special projects
+//   weight    — 該階段佔整個專案完成度的比重（六階段合計 100）。
+//               拍攝最重、結案收尾最輕，讓完成度數字貼近「實際工作量」而非「階段數量」。
 const DEFAULT_STAGES_TPL = [
   {
     label: '評估期',
+    weight: 5,
     items: [
       '收到客戶詢問',
       '與客戶討論需求（電話或 email）',
@@ -22,6 +25,7 @@ const DEFAULT_STAGES_TPL = [
   },
   {
     label: '前期製作',
+    weight: 15,
     items: [
       '腳本發想',
       '氛圍設計（Moodboard / 創作意圖）',
@@ -34,6 +38,7 @@ const DEFAULT_STAGES_TPL = [
   },
   {
     label: '美術製作',
+    weight: 25,
     items: [
       '場景訂製',
       '角色訂製',
@@ -49,6 +54,7 @@ const DEFAULT_STAGES_TPL = [
   },
   {
     label: '拍攝',
+    weight: 30,
     items: [
       '場景陳設',
       '燈光架設',
@@ -63,6 +69,7 @@ const DEFAULT_STAGES_TPL = [
   },
   {
     label: '後製',
+    weight: 20,
     items: [
       '建立鏡頭後製表',
       '支架修除',
@@ -84,6 +91,7 @@ const DEFAULT_STAGES_TPL = [
   },
   {
     label: '最終交付',
+    weight: 5,
     items: [
       '提供高解析檔案',
       '安排上傳日期',
@@ -215,6 +223,7 @@ const makeStage = (tpl, statusOverride) => ({
   id: uid('s'),
   emoji: tpl.emoji,
   label: tpl.label,
+  weight: tpl.weight,
   status: statusOverride || 'todo',
   start: '',
   end: '',
@@ -570,11 +579,53 @@ function stageProgress(stage) {
   const total = stage.items.reduce((a, it) => a + itemProgress(it), 0);
   return total / stage.items.length;
 }
-// 專案完成比例（0..100 整數）：每個階段權重相等取平均。
+// 階段權重：佔整個專案完成度的比重。
+// 來源優先序：stage.weight（新專案建立時從模板帶入）→ 模板同名階段 → 找不到就當「平均份量」。
+// 舊專案的階段多半沒有 weight、名稱也對不到新模板 → 全部 fallback 成相同權重，行為跟改版前一樣。
+function getStageWeight(stage) {
+  const w = Number(stage && stage.weight);
+  if (w > 0) return w;
+  const label = (stage && stage.label) || '';
+  const tpl = findStageTemplate(label);
+  if (tpl && Number(tpl.weight) > 0) return Number(tpl.weight);
+  // 舊專案的階段名對不到新模板 → 用關鍵字推測份量（例：「交件收款」→ 收尾 5）
+  if (/拍攝/.test(label) && /後製|後期/.test(label)) return 50; // 「拍攝後製」合併階段 = 30 + 20
+  if (/拍攝/.test(label)) return 30;
+  if (/美術/.test(label)) return 25;
+  if (/後製|後期/.test(label)) return 20;
+  if (/前期/.test(label)) return 15;
+  if (/評估|簽約|啟動/.test(label)) return 5;
+  if (/交件|交付|收款|結案/.test(label)) return 5;
+  return 17; // ≈ 100 / 6，視為一個平均份量的階段
+}
+// 專案完成比例（0..100 整數）：各階段依權重加權平均。
+// 拍攝（30）做完跳一大格、最終交付（5）只剩收尾時不會看起來還差一大塊。
 function projectPct(project) {
   if (!project.stages || project.stages.length === 0) return 0;
-  const total = project.stages.reduce((a, s) => a + stageProgress(s), 0);
-  return Math.round((total / project.stages.length) * 100);
+  let acc = 0, wsum = 0;
+  project.stages.forEach(s => {
+    const w = getStageWeight(s);
+    acc += stageProgress(s) * w;
+    wsum += w;
+  });
+  return wsum > 0 ? Math.round((acc / wsum) * 100) : 0;
+}
+// 數「已完成的最小工作單位」總數：有子細項的細項算子細項，沒有的算細項本身。
+// 給「距上次打開」摘要用。
+function countDoneLeaves(project) {
+  let done = 0;
+  (project.stages || []).forEach(s => (s.items || []).forEach(it => {
+    if (it.children && it.children.length > 0) {
+      it.children.forEach(c => {
+        const st = childStatus(c);
+        if (st === 'done' || st === 'confirmed') done++;
+      });
+    } else {
+      const st = itemStatus(it);
+      if (st === 'done' || st === 'confirmed') done++;
+    }
+  }));
+  return done;
 }
 
 function celebrateStage(stageId) {
@@ -650,6 +701,37 @@ function CompletionRing({ pct }) {
   );
 }
 
+// 戰績列：已結案專案的累積成就。案子歸檔後不是「消失」，是「入列」。
+// 「比預定早交」只累計提前的天數（completedAt 早於 due），遲交不倒扣——這裡是獎盃架，不是法庭。
+function TrophyStrip({ projects }) {
+  const count = projects.length;
+  const totalBudget = projects.reduce((a, p) => a + (Number(p.budget) || 0), 0);
+  const durations = projects
+    .filter(p => p.start && (p.completedAt || p.due))
+    .map(p => daysBetween(new Date(p.start), new Date(p.completedAt || p.due)))
+    .filter(d => d > 0);
+  const avgDays = durations.length ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : null;
+  const savedDays = projects.reduce((a, p) => {
+    if (!p.completedAt || !p.due) return a;
+    const d = daysBetween(new Date(p.completedAt), new Date(p.due));
+    return d > 0 ? a + d : a;
+  }, 0);
+  return (
+    <div className="trophy-strip">
+      <span className="trophy-label">戰績</span>
+      <span className="trophy-item">已結案 <strong>{count}</strong> 支</span>
+      <span className="sep">·</span>
+      <span className="trophy-item">合約總額 <strong>{fmtNT(totalBudget)}</strong></span>
+      {avgDays !== null && (
+        <><span className="sep">·</span><span className="trophy-item">平均工期 <strong>{avgDays}</strong> 天</span></>
+      )}
+      {savedDays > 0 && (
+        <><span className="sep">·</span><span className="trophy-item saved">比預定早交 <strong>{savedDays}</strong> 天</span></>
+      )}
+    </div>
+  );
+}
+
 function StageBar({ variant, stages, selectedStageId, onClick, onCycle, onInsert, onDelete }) {
   return (
     <div className={`stage-bar variant-${variant}`}>
@@ -670,7 +752,11 @@ function StageBar({ variant, stages, selectedStageId, onClick, onCycle, onInsert
             <span className="seg-label">{s.label}</span>
           </button>
         ) : (
-          <button key={s.id} className={cls} data-stage-id={s.id} onClick={handleClick} title={`${s.label} — Shift+點擊切換狀態`}>
+          // 長條 variant：每段寬度依權重分配——拍攝（30）寬、交件收尾（5）窄，
+          // 讓「只剩收尾」的案子看起來就是只剩一小塊，而不是還有一大段。
+          <button key={s.id} className={cls} data-stage-id={s.id} onClick={handleClick}
+            style={{ flexGrow: getStageWeight(s) }}
+            title={`${s.label}（份量 ${getStageWeight(s)}%）— Shift+點擊切換狀態`}>
             <span className="seg-label">{s.label}</span>
           </button>
         );
@@ -1302,8 +1388,19 @@ function StageDetail({ project, stageId, onClose, onUpdateStage, onDeleteStage, 
     return st === 'done' || st === 'confirmed';
   });
 
+  // 超常發揮：這個階段比預定結束日早幾天完成（doneAt 由轉變偵測 effect 自動蓋章）
+  const stageEarlyDays = (stage.doneAt && stage.end)
+    ? daysBetween(new Date(stage.doneAt), new Date(stage.end)) : 0;
+
   const completeAll = () => {
-    const items = stage.items.map(it => ({ ...it, status: 'done', done: true }));
+    // 連同底下所有「子細項」一起標成完成——否則有子細項的大細項會因為子項沒打滿而卡在未完成，
+    // 整個專案完成度就永遠湊不到 100%（97% bug 的根源）。
+    const items = stage.items.map(it => ({
+      ...it,
+      status: 'done',
+      done: true,
+      children: (it.children || []).map(c => ({ ...c, status: 'done', done: true })),
+    }));
     update({ items, status: 'done' });
     celebrateStage(stageId);
   };
@@ -1332,6 +1429,11 @@ function StageDetail({ project, stageId, onClose, onUpdateStage, onDeleteStage, 
           </h3>
         </div>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {stageEarlyDays > 0 && (
+            <span className="early-badge" title={`預定 ${fmtDate(new Date(stage.end))}，實際 ${fmtDate(new Date(stage.doneAt))} 完成`}>
+              提前 {stageEarlyDays} 天完成
+            </span>
+          )}
           {!allItemsDone && stage.items.length > 0 && (
             <button className="btn-complete-all" onClick={completeAll} title="將所有工作項目標為已完成">
               ✓ 全部完成
@@ -2775,6 +2877,9 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
   // 用全域的 projectPct（會處理子細項 + 階段等權重平均）。
   const pct = projectPct(project);
   const canArchive = pct === 100;
+  // 超常發揮：完成日早於「原定」交件日才算提前（延期後才趕上不算，對自己誠實）
+  const earlyDays = (canArchive && project.completedAt && !isNaN(origDue))
+    ? daysBetween(new Date(project.completedAt), origDue) : 0;
   const cardColor = colorById(project.color);
   const [metaOpen, setMetaOpen] = useState(false);
 
@@ -2836,17 +2941,35 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
         </div>
 
         <div className="card-right">
-          <div className={`countdown ${isExtended ? 'overtime' : (warn ? 'warn' : '')}`}>
-            <div className="countdown-num">
-              {days < 0 ? `+${Math.abs(days)}` : days}<span className="unit">{days < 0 ? '天逾期' : '天'}</span>
-            </div>
-            <div className="countdown-label">
-              <span className="due-date">{fmtDate(effDue)}</span>
-              <span className="due-sep">·</span>
-              <span>{isExtended ? '延長賽' : (warn ? '緊急' : '距交件')}</span>
-            </div>
-            {isExtended && (
-              <div className="overtime-note">原定 {fmtDate(origDue)}・加時 {extDays} 天</div>
+          <div className={`countdown ${canArchive ? 'done' : (isExtended ? 'overtime' : (warn ? 'warn' : ''))}`}>
+            {canArchive ? (
+              <>
+                <div className="countdown-num">
+                  <span className="done-check">✓</span><span className="unit">已完成</span>
+                </div>
+                <div className="countdown-label">
+                  <span className="due-date">{fmtDate(effDue)}</span>
+                  <span className="due-sep">·</span>
+                  <span>交件</span>
+                </div>
+                {earlyDays > 0 && (
+                  <div className="early-note">提前 {earlyDays} 天完成</div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="countdown-num">
+                  {days < 0 ? `+${Math.abs(days)}` : days}<span className="unit">{days < 0 ? '天逾期' : '天'}</span>
+                </div>
+                <div className="countdown-label">
+                  <span className="due-date">{fmtDate(effDue)}</span>
+                  <span className="due-sep">·</span>
+                  <span>{isExtended ? '延長賽' : (warn ? '緊急' : '距交件')}</span>
+                </div>
+                {isExtended && (
+                  <div className="overtime-note">原定 {fmtDate(origDue)}・加時 {extDays} 天</div>
+                )}
+              </>
             )}
           </div>
           <CompletionRing pct={pct} />
@@ -2875,6 +2998,25 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
               <span className="meta-label">外包</span>
               <span className="meta-value">{(project.outsources || []).length} 筆</span>
             </div>
+            {canArchive && (
+              <>
+                <span className="sep">·</span>
+                <div className="meta-item">
+                  <span className="meta-label">交件結果</span>
+                  {project.completedAt ? (
+                    earlyDays > 0 ? (
+                      <span className="meta-value result-early">提前 {earlyDays} 天（原定 {fmtDate(origDue)}・實際 {fmtDate(project.completedAt)}）</span>
+                    ) : earlyDays < 0 ? (
+                      <span className="meta-value result-late">超時 {-earlyDays} 天（原定 {fmtDate(origDue)}・實際 {fmtDate(project.completedAt)}）</span>
+                    ) : (
+                      <span className="meta-value result-early">準時交件（{fmtDate(origDue)}）</span>
+                    )
+                  ) : (
+                    <span className="meta-value muted">完成日未記錄，可在編輯視窗補填</span>
+                  )}
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -2948,6 +3090,7 @@ function EditProjectModal({ project, onClose, onSave }) {
     start: project.start || '',
     due: project.due || '',
     extendedDue: project.extendedDue || '',
+    completedAt: project.completedAt || '',
     color: project.color || 'none',
   });
 
@@ -2963,6 +3106,7 @@ function EditProjectModal({ project, onClose, onSave }) {
       start: form.start,
       due: form.due,
       extendedDue: form.extendedDue || '',
+      completedAt: form.completedAt || '',
       color: form.color,
     });
   };
@@ -3004,6 +3148,17 @@ function EditProjectModal({ project, onClose, onSave }) {
               專案延期才填。填了之後：倒數改用這天、卡片轉橘色「延長賽」，並對<strong>本案</strong>按逾期天數加收「延期佔用費」；<strong>不影響其他案</strong>的固定成本分攤。留空＝沒有延期。
               {form.extendedDue && (
                 <> <button type="button" className="link-btn-inline" onClick={() => setForm({ ...form, extendedDue: '' })}>清除延期</button></>
+              )}
+            </div>
+          </div>
+          <div className="field">
+            <label className="field-label">實際完成日（選填）</label>
+            <input className="date-input" type="date" value={form.completedAt}
+              onChange={e => setForm({ ...form, completedAt: e.target.value })} />
+            <div className="field-hint">
+              專案達 100% 時系統會自動記錄。這欄是給<strong>更早完成的舊案</strong>補填用——填了之後「詳細資訊」會顯示這案當初提前或超時幾天。
+              {form.completedAt && (
+                <> <button type="button" className="link-btn-inline" onClick={() => setForm({ ...form, completedAt: '' })}>清除</button></>
               )}
             </div>
           </div>
@@ -5213,6 +5368,57 @@ function Tracker({ session, onSignOut }) {
     saveUserSettings(next);
   };
 
+  // 名言起始畫面：每天第一次打開才顯示（localStorage 記今天顯示過了沒），
+  // 按「知道了」或點任何地方就淡出回到專案畫面。
+  const QUOTE_SPLASH_KEY = 'jt745-quote-splash-date';
+  const [showQuoteSplash, setShowQuoteSplash] = useState(() => {
+    try { return localStorage.getItem(QUOTE_SPLASH_KEY) !== toISODate(TODAY); } catch (e) { return false; }
+  });
+  const [splashClosing, setSplashClosing] = useState(false);
+  const closeSplash = () => {
+    if (splashClosing) return;
+    try { localStorage.setItem(QUOTE_SPLASH_KEY, toISODate(TODAY)); } catch (e) {}
+    setSplashClosing(true);
+    setTimeout(() => setShowQuoteSplash(false), 450);
+  };
+  useEffect(() => {
+    if (!showQuoteSplash) return;
+    const onKey = (e) => { if (e.key === 'Escape' || e.key === 'Enter') closeSplash(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showQuoteSplash, splashClosing]);
+
+  // 「距上次打開」變化摘要：快照存在這台裝置的瀏覽器（localStorage），
+  // 載入完成後跟上次的快照比對，有進步就顯示橫幅。只在載入時跑一次。
+  const [visitDelta, setVisitDelta] = useState(null);
+  const visitSnapDone = useRef(false);
+  useEffect(() => {
+    if (!dataReady || loadError || visitSnapDone.current) return;
+    visitSnapDone.current = true;
+    const KEY = 'jt745-last-snapshot';
+    let old = null;
+    try { old = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) { old = null; }
+    const snap = { date: toISODate(TODAY), projects: {} };
+    projects.filter(p => !p.deleted).forEach(p => {
+      snap.projects[p.id] = { pct: projectPct(p), done: countDoneLeaves(p), title: p.title };
+    });
+    if (old && old.projects) {
+      let doneDelta = 0;
+      const gains = [];
+      Object.keys(snap.projects).forEach(id => {
+        const o = old.projects[id];
+        if (!o) return; // 新專案沒得比
+        const n = snap.projects[id];
+        if (n.done > o.done) doneDelta += n.done - o.done;
+        if (n.pct > o.pct) gains.push({ title: n.title, delta: n.pct - o.pct });
+      });
+      if (doneDelta > 0 || gains.length > 0) {
+        setVisitDelta({ since: old.date, doneDelta, gains });
+      }
+    }
+    try { localStorage.setItem(KEY, JSON.stringify(snap)); } catch (e) { /* 私密瀏覽等情況寫不進去，略過 */ }
+  }, [dataReady, loadError, projects]);
+
   // Celebration: detect completion transitions between renders.
   // prevProjectsRef stays null until the first ready render, so we don't
   // fire confetti for projects that loaded already-completed from the DB.
@@ -5223,12 +5429,30 @@ function Tracker({ session, onSignOut }) {
     prevProjectsRef.current = projects;
     if (prev === null) return; // first ready render — skip
 
+    // 蓋「實際完成日」章：跟彩花共用同一套轉變偵測（決策 5 pattern，集中一處不會漏）。
+    // 階段剛變完成 → 蓋 doneAt；取消完成 → 撤章。專案剛到 100% → 蓋 completedAt；跌回去 → 撤章。
+    const stampPatches = {}; // projectId -> { stageStamps: {stageId: dateOrNull}, hasProjectStamp, completedAt }
+
     for (const np of projects) {
       const op = prev.find(p => p.id === np.id);
       if (!op) continue; // brand-new project, nothing to compare
 
       const oldPct = projectPct(op);
       const newPct = projectPct(np);
+
+      const stageStamps = {};
+      for (const ns of np.stages) {
+        const os = op.stages.find(s => s.id === ns.id);
+        if (!os) continue;
+        if (os.status !== 'done' && ns.status === 'done' && !ns.doneAt) stageStamps[ns.id] = toISODate(TODAY);
+        if (os.status === 'done' && ns.status !== 'done' && ns.doneAt) stageStamps[ns.id] = null;
+      }
+      let hasProjectStamp = false, completedAt = null;
+      if (oldPct < 100 && newPct === 100 && !np.completedAt) { hasProjectStamp = true; completedAt = toISODate(TODAY); }
+      else if (oldPct === 100 && newPct < 100 && np.completedAt) { hasProjectStamp = true; completedAt = null; }
+      if (Object.keys(stageStamps).length > 0 || hasProjectStamp) {
+        stampPatches[np.id] = { stageStamps, hasProjectStamp, completedAt };
+      }
 
       if (oldPct < 100 && newPct === 100) {
         // Project just hit 100 — supersedes any individual stage bursts
@@ -5242,6 +5466,23 @@ function Tracker({ session, onSignOut }) {
         if (!os) continue;
         if (os.status !== 'done' && ns.status === 'done') celebrateStage(ns.id);
       }
+    }
+
+    if (Object.keys(stampPatches).length > 0) {
+      setProjects(prevP => {
+        const next = prevP.map(p => {
+          const sp = stampPatches[p.id];
+          if (!sp) return p;
+          const stamped = {
+            ...p,
+            stages: p.stages.map(s => (s.id in sp.stageStamps) ? { ...s, doneAt: sp.stageStamps[s.id] } : s),
+          };
+          if (sp.hasProjectStamp) stamped.completedAt = sp.completedAt;
+          return stamped;
+        });
+        next.forEach(p => { if (stampPatches[p.id]) saveProjectInDB(p); });
+        return next;
+      });
     }
   }, [projects, dataReady]);
 
@@ -5548,6 +5789,16 @@ function Tracker({ session, onSignOut }) {
 
   return (
     <div className="app">
+      {showQuoteSplash && (
+        <div className={`quote-splash ${splashClosing ? 'closing' : ''}`} onClick={closeSplash}>
+          <div className="quote-splash-inner">
+            <div className="quote-splash-eyebrow">今日格言</div>
+            <div className="quote-splash-text">「{getDailyQuote().text}」</div>
+            <div className="quote-splash-author">— {getDailyQuote().author}</div>
+            <button className="btn btn-primary quote-splash-btn" onClick={closeSplash}>知道了</button>
+          </div>
+        </div>
+      )}
       <header className="topbar">
         <div className="brand">
           <div className="studio-mark">
@@ -5615,6 +5866,20 @@ function Tracker({ session, onSignOut }) {
         <main className="app-main">
           {currentPage === 'projects' && (
             <>
+              {visitDelta && (
+                <div className="delta-banner">
+                  <span className="delta-label">
+                    距上次打開{visitDelta.since === toISODate(TODAY) ? '（今天稍早）' : `（${fmtDate(new Date(visitDelta.since))}）`}
+                  </span>
+                  {visitDelta.doneDelta > 0 && (
+                    <span className="delta-item">完成 <strong>+{visitDelta.doneDelta}</strong> 項</span>
+                  )}
+                  {visitDelta.gains.map(g => (
+                    <span key={g.title} className="delta-item">{g.title} <strong>+{g.delta}%</strong></span>
+                  ))}
+                  <button className="delta-dismiss" onClick={() => setVisitDelta(null)} title="關閉">×</button>
+                </div>
+              )}
               <div className="tabs-row">
                 <div className="tabs-wrap" tabIndex={0}>
                   <button className="tabs-trigger" aria-label="切換分頁">
@@ -5713,6 +5978,9 @@ function Tracker({ session, onSignOut }) {
                   );
                 })}
               </div>
+              {tab === 'active' && archivedProjects.length > 0 && (
+                <TrophyStrip projects={archivedProjects} />
+              )}
             </>
           )}
 
