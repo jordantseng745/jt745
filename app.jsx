@@ -497,57 +497,185 @@ async function loadProjects() {
   return (data || []).map(row => ({ ...row.data, id: row.id, _position: row.position }));
 }
 
+// ---------- 儲存狀態總機（Save tracker）----------
+// 所有「寫入資料庫」的函式都會跟這裡報備：開始了 / 成功了 / 失敗了。
+// SaveIndicator 元件訂閱它，在畫面角落即時顯示「儲存中／已儲存／儲存失敗」。
+//
+// 為什麼要有 key：這個 App 的每次寫入都是「整筆專案覆蓋」（見 toRow），
+// 不是只補一個欄位。所以同一個 key 後來寫成功了，就真的可以蓋掉先前那次失敗
+// ——資料不會殘缺。不同 key 之間則互不相干，A 案失敗不會被 B 案的成功掩蓋。
+const SaveTracker = (function () {
+  let pending = 0;                 // 正在寫入中的數量
+  const failures = new Map();      // key -> { msg, retry }  尚未被成功寫入取代的失敗
+  let lastSavedAt = null;          // 最後一次成功寫入的時間戳
+  const listeners = new Set();
+
+  function snapshot() {
+    let status;
+    if (failures.size > 0)   status = 'error';
+    else if (pending > 0)    status = 'saving';
+    else if (lastSavedAt)    status = 'saved';
+    else                     status = 'idle';
+    let firstMsg = null;
+    failures.forEach(function (v) { if (firstMsg === null) firstMsg = v.msg; });
+    return {
+      status: status,
+      pending: pending,
+      failedCount: failures.size,
+      lastSavedAt: lastSavedAt,
+      lastError: firstMsg,
+    };
+  }
+
+  function emit() {
+    const snap = snapshot();
+    listeners.forEach(function (fn) { try { fn(snap); } catch (e) {} });
+  }
+
+  return {
+    begin: function () { pending++; emit(); },
+    ok: function (key) {
+      pending = Math.max(0, pending - 1);
+      failures.delete(key);          // 同一個 key 寫成功 → 先前的失敗已被覆蓋
+      lastSavedAt = Date.now();
+      emit();
+    },
+    fail: function (key, msg, retry) {
+      pending = Math.max(0, pending - 1);
+      failures.set(key, { msg: msg || '未知錯誤', retry: retry });
+      emit();
+    },
+    // 把所有失敗的寫入重跑一次
+    retryAll: function () {
+      const jobs = [];
+      failures.forEach(function (v) { if (v.retry) jobs.push(v.retry); });
+      jobs.forEach(function (fn) { fn(); });
+    },
+    hasUnsaved: function () { return pending > 0 || failures.size > 0; },
+    snapshot: snapshot,
+    subscribe: function (fn) {
+      listeners.add(fn);
+      return function () { listeners.delete(fn); };
+    },
+  };
+})();
+
+// 把一個寫入動作包起來，自動向總機回報。
+// key 用來識別「這是在寫哪一筆」，失敗後重試也是重跑同一個 run。
+async function trackSave(key, run) {
+  SaveTracker.begin();
+  try {
+    const result = await run();
+    SaveTracker.ok(key);
+    return result;
+  } catch (e) {
+    const msg = (e && e.message) ? e.message : String(e);
+    // 重試失敗會再度登記回 failures，這裡先接住避免噴出無關的 unhandled rejection
+    SaveTracker.fail(key, msg, function () {
+      trackSave(key, run).catch(function () {});
+    });
+    throw e;
+  }
+}
+
 async function createProjectInDB(projectData) {
-  // Negative timestamp so newest projects sort to the top by default
-  const { data, error } = await supa
-    .from('projects')
-    .insert({ data: projectData, position: -Date.now() })
-    .select('id, data, position')
-    .single();
-  if (error) throw error;
-  return { ...data.data, id: data.id, _position: data.position };
+  // 新增沒有既有 id 可當 key，用一次性的 key；失敗不提供 retry
+  // （重試新增有重複建立的風險，交給使用者自己再按一次「新增專案」）
+  return trackSave('create:' + Date.now(), async function () {
+    // Negative timestamp so newest projects sort to the top by default
+    const { data, error } = await supa
+      .from('projects')
+      .insert({ data: projectData, position: -Date.now() })
+      .select('id, data, position')
+      .single();
+    if (error) throw error;
+    return { ...data.data, id: data.id, _position: data.position };
+  });
 }
 
 async function saveProjectInDB(project) {
   if (!project?.id) return;
-  const { error } = await supa
-    .from('projects')
-    .update({ data: toRow(project) })
-    .eq('id', project.id);
-  if (error) console.error('[saveProject] failed:', error.message);
+  // 先把要寫的內容拍成快照，重試時才不會受之後的編輯影響
+  const payload = toRow(project);
+  const id = project.id;
+  return trackSave('project:' + id, async function () {
+    const { error } = await supa
+      .from('projects')
+      .update({ data: payload })
+      .eq('id', id);
+    if (error) throw error;
+  }).catch(function (e) {
+    // 不往外拋：維持樂觀更新的操作手感，失敗改由角落的指示器呈現
+    console.error('[saveProject] failed:', e.message);
+  });
 }
 
 async function deleteProjectInDB(id) {
-  const { error } = await supa.from('projects').delete().eq('id', id);
-  if (error) console.error('[deleteProject] failed:', error.message);
+  return trackSave('delete:' + id, async function () {
+    const { error } = await supa.from('projects').delete().eq('id', id);
+    if (error) throw error;
+  }).catch(function (e) {
+    console.error('[deleteProject] failed:', e.message);
+  });
 }
 
 async function saveOrderInDB(orderedIds) {
-  await Promise.all(orderedIds.map((id, i) =>
-    supa.from('projects').update({ position: i }).eq('id', id)
-  ));
+  const ids = orderedIds.slice();
+  return trackSave('order', async function () {
+    const results = await Promise.all(ids.map((id, i) =>
+      supa.from('projects').update({ position: i }).eq('id', id)
+    ));
+    const bad = results.find(r => r && r.error);
+    if (bad) throw bad.error;
+  }).catch(function (e) {
+    console.error('[saveOrder] failed:', e.message);
+  });
 }
 
 // ---------- User settings (global cash-flow params) ----------
-async function loadUserSettings() {
-  const { data: { user } } = await supa.auth.getUser();
-  if (!user) return null;
+// 注意：這裡「載入失敗」和「載入成功但本來就是空的」必須分得出來。
+// 分不出來的話，一次連線失敗會讓畫面看起來像「資料不見了」，
+// 而且使用者若在那個狀態下按儲存，就會把空設定蓋回資料庫、真的洗掉資料。
+// 失敗一律用 throw，由呼叫端記錄成 settingsError。
+// 取得目前使用者 id。優先用呼叫端傳進來的（Tracker 手上本來就有 session），
+// 沒傳才讀本機已保存的 session。
+//
+// ⚠️ 絕對不要改回 supa.auth.getUser()。
+// getUser() 會「額外打一次網路請求」去跟 Auth 伺服器驗證 token；
+// 而 loadProjects() 完全不需要這一步。這個不對稱正是 2026-08-08 那次
+// 「專案都在、財務資料整片消失」最可能的成因：那一次額外請求失敗了，
+// 專案照常載入，設定卻拿不到。getSession() 只讀本機、不打網路，穩定得多。
+async function resolveUserId(userId) {
+  if (userId) return userId;
+  const { data, error } = await supa.auth.getSession();
+  if (error) throw new Error('無法取得登入狀態：' + error.message);
+  const id = data && data.session && data.session.user && data.session.user.id;
+  if (!id) throw new Error('尚未登入');
+  return id;
+}
+
+async function loadUserSettings(userId) {
+  const uid = await resolveUserId(userId);
   const { data, error } = await supa
     .from('user_settings')
     .select('data')
-    .eq('owner_id', user.id)
+    .eq('owner_id', uid)
     .maybeSingle();
-  if (error) { console.error('[loadUserSettings] failed:', error.message); return null; }
+  if (error) throw new Error(error.message);
   return data?.data || {};
 }
 
-async function saveUserSettings(settings) {
-  const { data: { user } } = await supa.auth.getUser();
-  if (!user) return;
-  const { error } = await supa
-    .from('user_settings')
-    .upsert({ owner_id: user.id, data: settings, updated_at: new Date().toISOString() });
-  if (error) console.error('[saveUserSettings] failed:', error.message);
+async function saveUserSettings(settings, userId) {
+  const payload = JSON.parse(JSON.stringify(settings || {}));
+  return trackSave('settings', async function () {
+    const uid = await resolveUserId(userId);
+    const { error } = await supa
+      .from('user_settings')
+      .upsert({ owner_id: uid, data: payload, updated_at: new Date().toISOString() });
+    if (error) throw error;
+  }).catch(function (e) {
+    console.error('[saveUserSettings] failed:', e.message);
+  });
 }
 
 // ---------- Celebration helpers ----------
@@ -688,15 +816,33 @@ function celebrateProject(projectId) {
 // ---------- Components ----------
 function CompletionRing({ pct }) {
   const r = 22, c = 2 * Math.PI * r;
-  const off = c * (1 - pct / 100);
+  // 數字滾動：pct 變化時用 0.6 秒滾到新值（先快後慢），不是瞬間跳──回饋感差很多
+  const [disp, setDisp] = useState(pct);
+  const prevRef = useRef(pct);
+  useEffect(() => {
+    const from = prevRef.current, to = pct;
+    prevRef.current = pct;
+    if (from === to) return;
+    let raf, start;
+    const step = (ts) => {
+      if (start === undefined) start = ts;
+      const t = Math.min(1, (ts - start) / 600);
+      const eased = 1 - Math.pow(1 - t, 3); // easeOutCubic：先快後慢
+      setDisp(Math.round(from + (to - from) * eased));
+      if (t < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [pct]);
+  const off = c * (1 - disp / 100);
   return (
-    <div className="completion">
+    <div className={`completion ${pct === 100 ? 'done' : ''}`}>
       <svg width="56" height="56" viewBox="0 0 56 56">
         <circle className="track" cx="28" cy="28" r={r} fill="none" strokeWidth="3" />
         <circle className="fill" cx="28" cy="28" r={r} fill="none" strokeWidth="3"
           strokeDasharray={c} strokeDashoffset={off} strokeLinecap="round" />
       </svg>
-      <div className="completion-text">{pct}%</div>
+      <div className="completion-text">{disp}%</div>
     </div>
   );
 }
@@ -5245,6 +5391,92 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
   );
 }
 
+// ---------- 儲存狀態指示器 ----------
+// 訂閱 SaveTracker，隨時反映「這台電腦打的東西，進資料庫了沒」。
+function useSaveStatus() {
+  const [snap, setSnap] = useState(() => SaveTracker.snapshot());
+  useEffect(() => SaveTracker.subscribe(setSnap), []);
+  // 「3 分鐘前」這種字要會自己走，所以每 20 秒逼它重畫一次
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const h = setInterval(() => tick(n => n + 1), 20000);
+    return () => clearInterval(h);
+  }, []);
+  return snap;
+}
+
+function relativeTime(ts) {
+  if (!ts) return '';
+  const secs = Math.floor((Date.now() - ts) / 1000);
+  if (secs < 10)   return '剛剛';
+  if (secs < 60)   return secs + ' 秒前';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60)   return mins + ' 分鐘前';
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24)    return hrs + ' 小時前';
+  return Math.floor(hrs / 24) + ' 天前';
+}
+
+function SaveIndicator({ settingsError, onReloadPage }) {
+  const s = useSaveStatus();
+
+  // 設定載入失敗 → 這是最嚴重的狀態，蓋過一切
+  if (settingsError) {
+    return (
+      <div className="save-indicator is-error" role="status" aria-live="polite">
+        <span className="save-dot"></span>
+        <span className="save-text">
+          <strong>資料載入失敗</strong>
+          <span className="save-sub">{settingsError}</span>
+        </span>
+        <button className="save-action" onClick={onReloadPage}>重新載入</button>
+      </div>
+    );
+  }
+
+  if (s.status === 'error') {
+    return (
+      <div className="save-indicator is-error" role="status" aria-live="polite">
+        <span className="save-dot"></span>
+        <span className="save-text">
+          <strong>{s.failedCount} 筆變更沒存進去</strong>
+          <span className="save-sub">{s.lastError}</span>
+        </span>
+        <button className="save-action" onClick={() => SaveTracker.retryAll()}>重試</button>
+      </div>
+    );
+  }
+
+  if (s.status === 'saving') {
+    return (
+      <div className="save-indicator is-saving" role="status" aria-live="polite">
+        <span className="save-dot"></span>
+        <span className="save-text">儲存中…</span>
+      </div>
+    );
+  }
+
+  if (s.status === 'saved') {
+    return (
+      <div className="save-indicator is-saved" role="status" aria-live="polite">
+        <span className="save-dot"></span>
+        <span className="save-text">
+          已儲存
+          <span className="save-sub">{relativeTime(s.lastSavedAt)}</span>
+        </span>
+      </div>
+    );
+  }
+
+  // idle：這次開啟後還沒動過任何東西
+  return (
+    <div className="save-indicator is-idle" role="status">
+      <span className="save-dot"></span>
+      <span className="save-text">已連線<span className="save-sub">尚無變更</span></span>
+    </div>
+  );
+}
+
 // ---------- Main app (auth wrapper) ----------
 function App() {
   const [session, setSession] = useState(null);
@@ -5267,6 +5499,8 @@ function App() {
 }
 
 function Tracker({ session, onSignOut }) {
+  // 登入者 id：App 早就拿到了，直接往下傳，省掉每次讀寫設定都要再打一次驗證請求
+  const uid = session?.user?.id;
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
   const [projects, _setProjectsRaw] = useState([]);
   const [dataReady, setDataReady] = useState(false);
@@ -5277,12 +5511,21 @@ function Tracker({ session, onSignOut }) {
   const [showHint, setShowHint] = useState(true);
   const [dragId, setDragId] = useState(null);
   const [dragOverId, setDragOverId] = useState(null);
+  // globalSettings 的三種狀態，必須分得清楚：
+  //   null            → 還在載入（尚未知道內容）
+  //   {} 或有內容的物件 → 載入成功
+  //   settingsError    → 載入失敗（此時 globalSettings 仍為 null，且禁止任何儲存）
   const [globalSettings, _setGlobalSettingsRaw] = useState(null);
+  const [settingsError, setSettingsError] = useState(null);
   const [showCashSettings, setShowCashSettings] = useState(false);
   // ── Undo 堆疊（最多 5 步，同時記錄 projects + globalSettings）──
   const undoStackRef = useRef([]);
   const undoProjectsRef = useRef([]);
   const undoSettingsRef = useRef(null);
+  // 鍵盤快捷鍵的 handler 只綁一次，會記住第一次 render 的值，
+  // 所以 settingsError 要透過 ref 讀，才拿得到當下的狀態。
+  const settingsErrorRef = useRef(null);
+  useEffect(() => { settingsErrorRef.current = settingsError; }, [settingsError]);
   useEffect(() => { undoProjectsRef.current = projects; }, [projects]);
   useEffect(() => { undoSettingsRef.current = globalSettings; }, [globalSettings]);
   const dataReadyRef = useRef(false);
@@ -5309,8 +5552,11 @@ function Tracker({ session, onSignOut }) {
     var prev = undoStackRef.current.pop();
     _setProjectsRaw(prev.projects);
     prev.projects.forEach(function(p) { saveProjectInDB(p); });
-    _setGlobalSettingsRaw(prev.settings);
-    saveUserSettings(prev.settings);
+    // 設定沒載入成功時不要回寫，否則會用空設定覆蓋資料庫
+    if (!settingsErrorRef.current && prev.settings) {
+      _setGlobalSettingsRaw(prev.settings);
+      saveUserSettings(prev.settings, uid);
+    }
   };
   useEffect(() => {
     var handler = function(e) {
@@ -5337,36 +5583,78 @@ function Tracker({ session, onSignOut }) {
   // Load global cash-flow settings on mount
   useEffect(() => {
     let cancelled = false;
-    loadUserSettings()
-      .then(s => { if (!cancelled) _setGlobalSettingsRaw(s || {}); })
-      .catch(() => { if (!cancelled) _setGlobalSettingsRaw({}); });
+    loadUserSettings(uid)
+      .then(s => { if (!cancelled) { _setGlobalSettingsRaw(s || {}); setSettingsError(null); } })
+      .catch(err => {
+        if (cancelled) return;
+        // 關鍵：失敗時不要退回成 {}。退成 {} 會讓畫面看起來像「資料不見了」，
+        // 而且後續任何儲存都會把這份空設定蓋回資料庫，真的把資料洗掉。
+        console.error('[loadUserSettings] failed:', err.message);
+        setSettingsError(err.message || '無法連線');
+      });
     return () => { cancelled = true; };
-  }, []);
+  }, [uid]);
+
+  const retrySettingsLoad = () => {
+    setSettingsError(null);
+    loadUserSettings(uid)
+      .then(s => { _setGlobalSettingsRaw(s || {}); setSettingsError(null); })
+      .catch(err => setSettingsError(err.message || '無法連線'));
+  };
+
+  // 設定還沒載入完 / 載入失敗時，一律擋下儲存——否則會用空資料覆蓋資料庫。
+  const canWriteSettings = () => {
+    if (settingsError) {
+      alert('設定尚未成功載入，現在儲存會覆蓋掉資料庫裡原本的資料。\n\n請先按角落的「重新載入」，確認銀行餘額等資料都回來了，再修改。');
+      return false;
+    }
+    if (globalSettings === null) {
+      alert('設定還在載入中，請稍等一兩秒再試。');
+      return false;
+    }
+    return true;
+  };
 
   const onSaveCashSettings = (patch) => {
-    const next = { ...(globalSettings || {}), ...patch };
+    if (!canWriteSettings()) return;
+    const next = { ...globalSettings, ...patch };
     setGlobalSettings(next);
-    saveUserSettings(next);
+    saveUserSettings(next, uid);
     setShowCashSettings(false);
   };
 
   const onUpdateExtraExpenses = (nextList) => {
-    const next = { ...(globalSettings || {}), extraExpenses: nextList };
+    if (!canWriteSettings()) return;
+    const next = { ...globalSettings, extraExpenses: nextList };
     setGlobalSettings(next);
-    saveUserSettings(next);
+    saveUserSettings(next, uid);
   };
 
   const onUpdateCustomCategories = (nextList) => {
-    const next = { ...(globalSettings || {}), customExpenseCategories: nextList };
+    if (!canWriteSettings()) return;
+    const next = { ...globalSettings, customExpenseCategories: nextList };
     setGlobalSettings(next);
-    saveUserSettings(next);
+    saveUserSettings(next, uid);
   };
 
   const onUpdateCustomOutsourceRoles = (nextList) => {
-    const next = { ...(globalSettings || {}), customOutsourceRoles: nextList };
+    if (!canWriteSettings()) return;
+    const next = { ...globalSettings, customOutsourceRoles: nextList };
     setGlobalSettings(next);
-    saveUserSettings(next);
+    saveUserSettings(next, uid);
   };
+
+  // 有東西還沒存進資料庫就想關視窗 → 攔下來問一次
+  useEffect(() => {
+    const onBeforeUnload = (e) => {
+      if (!SaveTracker.hasUnsaved()) return;
+      e.preventDefault();
+      e.returnValue = '';
+      return '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, []);
 
   // 名言起始畫面：每天第一次打開才顯示（localStorage 記今天顯示過了沒），
   // 按「知道了」或點任何地方就淡出回到專案畫面。
@@ -5788,7 +6076,12 @@ function Tracker({ session, onSignOut }) {
   if (loadError) return <SplashScreen message={`讀取失敗：${loadError}`} />;
 
   return (
-    <div className="app">
+    <div className={`app ${showQuoteSplash && !splashClosing ? 'has-splash' : ''}`}>
+      {/* 固定在左下角，不分頁面、不隨捲動消失 */}
+      <SaveIndicator
+        settingsError={settingsError}
+        onReloadPage={retrySettingsLoad}
+      />
       {showQuoteSplash && (
         <div className={`quote-splash ${splashClosing ? 'closing' : ''}`} onClick={closeSplash}>
           <div className="quote-splash-inner">

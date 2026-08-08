@@ -4822,3 +4822,291 @@ select.input {
   background: rgba(243, 241, 237, 0.92);
   color: #131210;
 }
+
+/* ==========================================================
+   視覺升級：環境光 + 玻璃質感 + 流動進度 + 開場動畫
+   ========================================================== */
+
+/* --- 1. 環境層次背景：中性灰白的明暗起伏（不搶色），飽和色留給進度本身 --- */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(900px 620px at 14% 0%,  rgba(255, 255, 255, 0.85), transparent 62%),
+    radial-gradient(820px 620px at 88% 22%, rgba(20, 18, 12, 0.05),   transparent 65%),
+    radial-gradient(720px 540px at 24% 100%, rgba(20, 18, 12, 0.04),  transparent 65%);
+}
+[data-theme="dark"] body::before {
+  background:
+    radial-gradient(900px 620px at 14% 0%,  rgba(255, 255, 255, 0.045), transparent 62%),
+    radial-gradient(820px 620px at 88% 22%, rgba(0, 0, 0, 0.5),         transparent 65%),
+    radial-gradient(720px 540px at 24% 100%, rgba(255, 255, 255, 0.03), transparent 65%);
+}
+
+/* --- 2. 卡片 Liquid Glass：厚度感的四個訊號 ---
+   a) 上下漸層的半透明底（上亮下沉 = 有厚度的玻璃板）
+   b) 上緣亮線 + 下緣暗線（光從上面來，玻璃邊緣的反光與陰影）
+   c) 左上斜角高光片（鏡面反射）
+   d) 更深的落地陰影（浮起來才有厚度）*/
+.card {
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--bg-elev) 52%, transparent),
+    color-mix(in srgb, var(--bg-elev) 78%, transparent));
+  backdrop-filter: blur(22px) saturate(1.6);
+  -webkit-backdrop-filter: blur(22px) saturate(1.6);
+  border-color: color-mix(in srgb, var(--border) 60%, transparent);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -1px 0 rgba(20, 18, 12, 0.07),
+    0 14px 36px -14px rgba(20, 18, 12, 0.20),
+    0 3px 10px -4px rgba(20, 18, 12, 0.08);
+}
+/* 左上斜角高光片：模擬玻璃的鏡面反射 */
+.card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(118deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0) 34%);
+  border-radius: inherit;
+}
+.card:hover {
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -1px 0 rgba(20, 18, 12, 0.07),
+    0 20px 48px -16px rgba(20, 18, 12, 0.25),
+    0 4px 12px -4px rgba(20, 18, 12, 0.10);
+}
+[data-theme="dark"] .card {
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--bg-elev) 46%, transparent),
+    color-mix(in srgb, var(--bg-elev) 72%, transparent));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.10),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.5),
+    0 14px 36px -14px rgba(0, 0, 0, 0.6);
+}
+[data-theme="dark"] .card::after {
+  background: linear-gradient(118deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0) 34%);
+}
+
+/* 按鈕玻璃化：圓形動作鈕、詳細資訊、分頁切換、ghost 按鈕——都給玻璃厚度 */
+.card-action,
+.card-meta-toggle,
+.tabs-trigger,
+.btn.btn-ghost {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.55));
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    inset 0 -1px 0 rgba(20, 18, 12, 0.05),
+    0 1px 4px rgba(20, 18, 12, 0.08);
+}
+[data-theme="dark"] .card-action,
+[data-theme="dark"] .card-meta-toggle,
+[data-theme="dark"] .tabs-trigger,
+[data-theme="dark"] .btn.btn-ghost {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.04));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.4),
+    0 1px 4px rgba(0, 0, 0, 0.4);
+}
+/* 面板/戰績列也上一層淡玻璃，維持一家人 */
+.trophy-strip,
+.delta-banner {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+/* 手機：模糊很吃效能，而且小螢幕看不太出景深——自動降級回實色 */
+@media (max-width: 720px) {
+  .card {
+    background: var(--bg-elev);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .trophy-strip, .delta-banner { backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+
+/* --- 3. 流動進度：輸送帶式——多道光等距排列、等速持續向前流，不停頓 --- */
+.stage-bar.variant-bar .segment.status-active::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -50%;
+  width: 300%;
+  background: repeating-linear-gradient(90deg,
+    transparent 0px,
+    transparent 42px,
+    rgba(255, 255, 255, 0.30) 60px,
+    transparent 78px,
+    transparent 120px);
+  /* 位移剛好一個花紋週期（120px）→ 頭尾無縫接軌，永遠在流 */
+  animation: seg-conveyor 3.2s linear infinite;
+  pointer-events: none;
+}
+[data-theme="dark"] .stage-bar.variant-bar .segment.status-active::after {
+  background: repeating-linear-gradient(90deg,
+    transparent 0px,
+    transparent 42px,
+    rgba(255, 255, 255, 0.18) 60px,
+    transparent 78px,
+    transparent 120px);
+}
+@keyframes seg-conveyor {
+  from { transform: skewX(-14deg) translateX(-120px); }
+  to   { transform: skewX(-14deg) translateX(0); }
+}
+
+/* --- 4. 完成度環：更順的填充動畫 + 100% 轉翠綠 --- */
+.completion .fill { transition: stroke-dashoffset 0.7s cubic-bezier(0.22, 1, 0.36, 1); }
+.completion.done .fill { stroke: var(--stage-done, #10b981); }
+.completion.done .completion-text { color: var(--stage-done, #10b981); }
+
+/* --- 5. 開場動畫：Jarvis 展開介面——上欄降下、側欄滑入、卡片依序浮上 --- */
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(-14px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes slide-in-left {
+  from { opacity: 0; transform: translateX(-20px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes card-enter {
+  from { opacity: 0; transform: translateY(24px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+.topbar  { animation: rise-in 0.7s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.sidebar { animation: slide-in-left 0.65s cubic-bezier(0.22, 1, 0.36, 1) 0.15s both; }
+.card-list > .card { animation: card-enter 0.75s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.card-list > .card:nth-child(1) { animation-delay: 0.2s; }
+.card-list > .card:nth-child(2) { animation-delay: 0.34s; }
+.card-list > .card:nth-child(3) { animation-delay: 0.48s; }
+.card-list > .card:nth-child(4) { animation-delay: 0.62s; }
+.card-list > .card:nth-child(5) { animation-delay: 0.76s; }
+.card-list > .card:nth-child(6) { animation-delay: 0.9s; }
+.card-list > .card:nth-child(n+7) { animation-delay: 1.0s; }
+.trophy-strip { animation: card-enter 0.75s cubic-bezier(0.22, 1, 0.36, 1) 1.0s both; }
+
+/* 名言起始畫面顯示期間：開場動畫先按暫停，按「知道了」的瞬間才開演
+   （不然動畫在格言後面偷偷演完，等你進來早就結束了——「好，開工了」→ 介面才展開） */
+.app.has-splash .topbar,
+.app.has-splash .sidebar,
+.app.has-splash .card-list > .card,
+.app.has-splash .trophy-strip { animation-play-state: paused; }
+
+/* 尊重系統的「減少動態效果」設定 */
+@media (prefers-reduced-motion: reduce) {
+  .topbar, .sidebar, .card-list > .card, .trophy-strip { animation: none; }
+  .stage-bar.variant-bar .segment.status-active::after { animation: none; display: none; }
+  .completion .fill { transition: none; }
+}
+
+/* ============================================================
+   儲存狀態指示器（左下角，全頁面常駐）
+   狀態：is-idle / is-saving / is-saved / is-error
+   ============================================================ */
+.save-indicator {
+  position: fixed;
+  left: 18px;
+  bottom: 18px;
+  z-index: 150;              /* 高於 modal(100)，低於甘特全螢幕(200) 與名言(300) */
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.10);
+  font-size: 12.5px;
+  line-height: 1.25;
+  color: var(--text-2);
+  max-width: min(360px, calc(100vw - 36px));
+  transition: border-color 0.25s ease, background 0.25s ease;
+}
+
+.save-indicator .save-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+
+.save-indicator .save-text {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+.save-indicator .save-text strong { font-weight: 600; }
+
+.save-indicator .save-sub {
+  color: var(--text-3);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 尚無變更：低調 */
+.save-indicator.is-idle { opacity: 0.72; }
+
+/* 儲存中：琥珀色 + 呼吸 */
+.save-indicator.is-saving .save-dot {
+  background: var(--stage-active);
+  animation: save-pulse 1s ease-in-out infinite;
+}
+@keyframes save-pulse {
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%      { opacity: 0.4; transform: scale(0.8); }
+}
+
+/* 已儲存：翠綠 */
+.save-indicator.is-saved .save-dot { background: var(--stage-done); }
+
+/* 失敗：紅色，加重存在感 */
+.save-indicator.is-error {
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, var(--bg));
+  color: var(--warn);
+}
+.save-indicator.is-error .save-dot { background: var(--warn); }
+.save-indicator.is-error .save-sub { color: color-mix(in srgb, var(--warn) 75%, var(--text)); }
+
+.save-indicator .save-action {
+  flex: none;
+  margin-left: 2px;
+  padding: 4px 11px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.save-indicator .save-action:hover {
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+@media (max-width: 640px) {
+  .save-indicator {
+    left: 12px;
+    bottom: 12px;
+    padding: 7px 12px;
+    font-size: 11.5px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .save-indicator.is-saving .save-dot { animation: none; }
+}
