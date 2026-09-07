@@ -187,10 +187,53 @@ const getOutsourcePayDate = (project) => {
   const payments = getPayments(project);
   const last = payments[payments.length - 1];
   if (!last?.dueDate) return '';
-  return addDays(last.dueDate, 5);
+  // 「尾款入帳後 5 天」：尾款已收就用實際入帳日；還沒收就用預計日（逾期未收會被推到明天，外包也跟著往後）
+  const base = (typeof getPaymentEffectiveDate === 'function' && getPaymentEffectiveDate(last)) || last.dueDate;
+  return addDays(base, 5);
 };
 // 外包單筆「已付」狀態 helpers（向下相容：舊資料沒有這兩個欄位）
 // 「已付」= 你已經把錢從銀行轉出去了；「未付」= 還沒付，現金流圖用預估日
+// ---- 客戶收款「已收到」helpers（跟外包 paid/paidDate 同一套模式；舊資料沒欄位＝未收）----
+const isPaymentReceived = (pay) => pay?.received === true;
+// 一筆收款的「有效日期」：
+//   已收 → 實際入帳日（現金流圖畫在真的進來的那天）
+//   未收 → 預計日；但預計日已過還沒收到，錢就還不在銀行，視為「今天以後才會進來」
+const getPaymentEffectiveDate = (pay) => {
+  if (isPaymentReceived(pay) && pay.receivedDate) return pay.receivedDate;
+  if (!pay?.dueDate) return '';
+  const d = new Date(pay.dueDate); d.setHours(0, 0, 0, 0);
+  // 推到「明天」：今天的餘額只能算真的進來的錢，逾期款要等它真的入帳才算
+  return d < TODAY ? addDays(toISODate(TODAY), 1) : pay.dueDate;
+};
+// 未付外包同一套：預估付款日已過但還沒付 → 錢還在戶頭，推到明天
+const getOutsourceEffectivePayDate = (project, o) => {
+  if (isOutsourcePaid(o)) return o.paidDate || '';
+  const est = getOutsourcePayDate(project);
+  if (!est) return '';
+  const d = new Date(est); d.setHours(0, 0, 0, 0);
+  return d < TODAY ? addDays(toISODate(TODAY), 1) : est;
+};
+// 專案的收款狀態：從每筆款項推導，不另存欄位（避免手動狀態跟實際紀錄打架）
+//   'none' 一筆都沒收 / 'partial' 收了一部分 / 'full' 全收齊
+const getBillingStatus = (project) => {
+  const pays = getPayments(project).filter(p => (Number(p.percentage) || 0) > 0);
+  if (pays.length === 0) return 'none';
+  const got = pays.filter(isPaymentReceived).length;
+  return got === 0 ? 'none' : got === pays.length ? 'full' : 'partial';
+};
+const isFullyPaid = (project) => getBillingStatus(project) === 'full';
+// 標記「已收／已付」時的預設日期：表定日（有延誤你再改），但不能是未來 → 提早收到就用今天
+const defaultActualDate = (scheduled) => {
+  const today = toISODate(TODAY);
+  if (!scheduled) return today;
+  return scheduled < today ? scheduled : today;
+};
+// 已收金額 / 已收比例
+const getReceivedAmount = (project) => {
+  const budget = Number(project.budget) || 0;
+  return getPayments(project).filter(isPaymentReceived)
+    .reduce((a, p) => a + budget * (Number(p.percentage) || 0) / 100, 0);
+};
 const isOutsourcePaid = (o) => o?.paid === true;
 const getOutsourcePaidDate = (o) => (o?.paid && o?.paidDate) ? o.paidDate : '';
 // 某筆外包「實際入帳日期」：已付 → 用實際付款日；未付 → 用專案的預估付款日
@@ -578,6 +621,85 @@ async function trackSave(key, run) {
   }
 }
 
+// ---------- 專案劇照（Supabase Storage）----------
+// 圖片不進 projects 的 jsonb：那張表每次打勾都是整筆重寫，塞圖進去等於每打一個勾重傳一張圖。
+// 圖片放 Storage bucket，專案資料只存一個公開網址（coverUrl）。
+const COVER_BUCKET = 'project-stills';
+
+// 瀏覽器端先縮圖再上傳，省流量也省載入時間
+// 最長邊 2400px、JPEG 品質 0.85：檔案約 400–800KB。卡片會把圖放大到 2–3×，1600 會糊。
+function resizeImageToBlob(file, maxSide, quality) {
+  maxSide = maxSide || 2400; quality = quality || 0.85;
+  return new Promise(function (resolve, reject) {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = function () {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+      const w = Math.round(img.naturalWidth * scale), h = Math.round(img.naturalHeight * scale);
+      const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      canvas.toBlob(function (b) { b ? resolve(b) : reject(new Error('無法壓縮圖片')); }, 'image/jpeg', quality);
+    };
+    img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('這個檔案不是可讀的圖片')); };
+    img.src = url;
+  });
+}
+
+// bucket 是「私有」的：專案資料只存路徑（coverPath），顯示時再向 Supabase 要一把
+// 7 天有效的簽名網址。沒登入、或鑰匙過期，網址就打不開——未發表的案子不會外流。
+async function uploadCoverImage(projectId, file) {
+  const blob = await resizeImageToBlob(file);
+  const path = projectId + '/' + Date.now() + '.jpg';
+  return trackSave('cover:' + projectId, async function () {
+    const { error } = await supa.storage.from(COVER_BUCKET)
+      .upload(path, blob, { contentType: 'image/jpeg', upsert: true, cacheControl: '31536000' });
+    if (error) throw new Error(error.message || '上傳失敗');
+    return path;
+  });
+}
+
+// 刪掉 Storage 上不再使用的劇照（換圖、移除、彻底刪除專案時）。失敗只記 console，不擋操作。
+async function deleteCoverImage(path) {
+  if (!path) return;
+  try {
+    const { error } = await supa.storage.from(COVER_BUCKET).remove([path]);
+    if (error) console.warn('[cover] delete failed:', error.message);
+    signedCoverCache.delete(path);
+  } catch (e) { console.warn('[cover] delete failed:', e && e.message); }
+}
+
+// 簽名網址快取：同一張圖在這次開啟期間只要一次，過期前 1 小時自動換新
+const COVER_SIGN_SECONDS = 60 * 60 * 24 * 7;
+const signedCoverCache = new Map(); // path -> { url, expiresAt, promise }
+function getSignedCoverUrl(path) {
+  if (!path) return Promise.resolve('');
+  const now = Date.now();
+  const hit = signedCoverCache.get(path);
+  if (hit && hit.url && hit.expiresAt - now > 60 * 60 * 1000) return Promise.resolve(hit.url);
+  if (hit && hit.promise) return hit.promise;
+  const promise = supa.storage.from(COVER_BUCKET).createSignedUrl(path, COVER_SIGN_SECONDS)
+    .then(function (res) {
+      if (res.error || !res.data || !res.data.signedUrl) throw new Error((res.error && res.error.message) || '無法取得圖片');
+      signedCoverCache.set(path, { url: res.data.signedUrl, expiresAt: now + COVER_SIGN_SECONDS * 1000 });
+      return res.data.signedUrl;
+    })
+    .catch(function (e) { signedCoverCache.delete(path); console.error('[cover] signed url failed:', e.message); return ''; });
+  signedCoverCache.set(path, { promise: promise });
+  return promise;
+}
+function useCoverUrl(path) {
+  const cached = path ? signedCoverCache.get(path) : null;
+  const [url, setUrl] = useState(cached && cached.url ? cached.url : '');
+  useEffect(() => {
+    let alive = true;
+    if (!path) { setUrl(''); return; }
+    getSignedCoverUrl(path).then(u => { if (alive) setUrl(u); });
+    return () => { alive = false; };
+  }, [path]);
+  return url;
+}
+
 async function createProjectInDB(projectData) {
   // 新增沒有既有 id 可當 key，用一次性的 key；失敗不提供 retry
   // （重試新增有重複建立的風險，交給使用者自己再按一次「新增專案」）
@@ -678,6 +800,118 @@ async function saveUserSettings(settings, userId) {
   });
 }
 
+// ---------- 財務綁定自我檢查（每次動到金額／日期邏輯後都要跑）----------
+// 用一個合成專案，逐項改「使用者能改的每個金錢輸入」，確認所有該變的下游計算真的變了：
+// 現金流事件、今日餘額、單案損益、收付款列表、營業稅。在 Console 打 __financeAudit() 看結果。
+// 這不是單元測試框架，是給沒有 build step 的專案用的「改完按一下就知道有沒有斷線」。
+function runFinanceAudit() {
+  const T = toISODate(TODAY);
+  const inFuture = (n) => addDays(T, n);
+  const base = () => ({
+    id: 'audit-p', title: '審查用案', client: '—', budget: 1000000, start: addDays(T, -60), due: inFuture(30),
+    overseas: false, archived: false, deleted: false,
+    payments: [
+      { id: 'pay-1', label: '頭期款', percentage: 50, dueDate: inFuture(5) },
+      { id: 'pay-2', label: '尾款',   percentage: 50, dueDate: inFuture(30) },
+    ],
+    outsources: [{ id: 'o1', name: '外包A', type: 'company', amount: 100000, taxable: true, paid: false, paidDate: null }],
+    stages: [],
+  });
+  const settings = () => ({ startDate: addDays(T, -90), bankBalance: 500000, monthlyFixedExpense: 100000, deductionDay: 5, extraExpenses: [] });
+  const sumBy = (ev, pred) => ev.filter(pred).reduce((a, e) => a + e.amount, 0);
+  const snap = (p, st) => {
+    const series = buildCashflowSeries([p], st, 12);
+    const alloc = computeFixedCostAllocations([p], st.monthlyFixedExpense);
+    const c = calcCosts(p, alloc[p.id], st.monthlyFixedExpense, 0);
+    return {
+      income: sumBy(series.events, e => e.amount > 0 && /^income/.test(e.kind)),
+      incomeEvents: series.events.filter(e => /^income/.test(e.kind)).map(e => toISODate(e.date) + ':' + e.kind + ':' + Math.round(e.amount)).join('|'),
+      outsourceOut: -sumBy(series.events, e => /^outsource/.test(e.kind)),
+      outsourceEvents: series.events.filter(e => /^outsource/.test(e.kind)).map(e => toISODate(e.date) + ':' + e.kind).join('|'),
+      extraOut: -sumBy(series.events, e => e.kind === 'extra'),
+      fixedOut: -sumBy(series.events, e => e.kind === 'fixed'),
+      vatOut: -sumBy(series.events, e => e.kind === 'vat'),
+      todayBalance: computeTodayBalance([p], st),
+      profit: c.profit, netVAT: c.netVAT, outsourceTotal: c.outsourceTotal, fixedCost: c.fixedCost,
+      receivableRows: buildReceivableRows([p]).map(r => r.label + ':' + r.amount + ':' + r.bucket + ':' + (r.dueDate || '') + ':' + (r.receivedDate || '')).join('|'),
+      payableRows: buildPaymentRows([p]).map(r => r.outsourceName + ':' + r.amount + ':' + r.bucket + ':' + (r.paidDate || r.effDate || '')).join('|'),
+      inFinance: buildCashflowSeries([p], st, 12).events.length,
+      // 跟另一個同期案子一起分攤時，本案拿到的固定成本（工作區間會影響它）
+      overtime: Math.round(computeOvertimeAllocations([p], st.monthlyFixedExpense)[p.id] || 0),
+      // 單案視窗的「逐月明細」各月加總必須等於分攤固定成本（跟一個同期案子合算）
+      byMonthMatches: (() => {
+        const q = Object.assign(base(), { id: 'audit-q', start: addDays(T, -30), due: inFuture(60) });
+        const alloc = computeFixedCostAllocations([p, q], st.monthlyFixedExpense);
+        const sum = computeProjectFixedByMonth([p, q], st.monthlyFixedExpense, p.id).reduce((a, r) => a + r.amount, 0);
+        return Math.abs(sum - (alloc[p.id] || 0)) < 1;
+      })(),
+      fixedShareWithPeer: (() => { const q = Object.assign(base(), { id: 'audit-q' }); return Math.round(computeFixedCostAllocations([p, q], st.monthlyFixedExpense)[p.id] || 0); })(),
+    };
+  };
+  const checks = [];
+  const check = (name, mutate, expect) => {
+    const p = base(), st = settings();
+    const before = snap(p, st);
+    const r = mutate(p, st) || {};
+    const after = snap(r.p || p, r.st || st);
+    const problems = [];
+    for (const [key, rule] of Object.entries(expect)) {
+      const b = before[key], a = after[key];
+      let ok;
+      if (rule === 'up') ok = a > b; else if (rule === 'down') ok = a < b;
+      else if (rule === 'change') ok = a !== b; else if (rule === 'same') ok = a === b;
+      else if (rule === 'zero') ok = a === 0; else if (typeof rule === 'function') ok = rule(a, b);
+      if (!ok) problems.push(`${key}: 期望 ${typeof rule === 'function' ? '自訂條件' : rule}，實際 ${JSON.stringify(b)} → ${JSON.stringify(a)}`);
+    }
+    checks.push({ 檢查: name, 通過: problems.length === 0 ? '✓' : '✗', 問題: problems.join('；') });
+  };
+
+  check('合約金額 +100,000 → 收入、應收、稅、淨利都變', (p) => { p.budget += 100000; },
+    { income: 'up', receivableRows: 'change', netVAT: 'up', profit: 'up' });
+  check('頭款比例 50→30 → 兩筆收入事件金額變、總額不變', (p) => { p.payments[0].percentage = 30; p.payments[1].percentage = 70; },
+    { incomeEvents: 'change', income: 'same' });
+  check('尾款預計日往後 20 天 → 收入事件日期變、應收列表變、外包預估付款日跟著動', (p) => { p.payments[1].dueDate = inFuture(50); },
+    { incomeEvents: 'change', receivableRows: 'change', outsourceEvents: 'change' });
+  check('尾款標記已收（實際入帳日=今天−3）→ 事件變 income-received、今日餘額增加、應收列表變', (p) => { p.payments[1].received = true; p.payments[1].receivedDate = addDays(T, -3); },
+    { incomeEvents: (a) => /income-received/.test(a), todayBalance: 'up', receivableRows: 'change' });
+  check('頭款預計日已過但未收 → 收入推到明天、不進今日餘額（今日餘額只少了那筆的營業稅：稅照發票日繳）', (p) => { p.payments[0].dueDate = addDays(T, -10); },
+    { incomeEvents: (a) => a.includes(inFuture(1) + ':income'),
+      todayBalance: (a, b) => Math.abs((b - a) - (500000 * 0.05 / 1.05)) < 1 });
+  check('已收但實際入帳日早於現金流起算日 → 不重複計入（已在期初餘額裡）', (p, st) => { p.payments[0].received = true; p.payments[0].receivedDate = addDays(T, -120); },
+    { income: 'down', todayBalance: 'same' });
+  check('外包金額 +50,000 → 支出事件、外包總額、淨利、應付列表都變', (p) => { p.outsources[0].amount += 50000; },
+    { outsourceOut: 'up', outsourceTotal: 'up', profit: 'down', payableRows: 'change' });
+  check('外包標記已付（實付日=今天−2）→ 事件變 outsource-paid、今日餘額減少', (p) => { p.outsources[0].paid = true; p.outsources[0].paidDate = addDays(T, -2); },
+    { outsourceEvents: (a) => /outsource-paid/.test(a), todayBalance: 'down', payableRows: 'change' });
+  check('外包預估付款日手動改 → 未付外包事件日期變', (p) => { p.outsourcePayDate = inFuture(60); },
+    { outsourceEvents: 'change', payableRows: 'change' });
+  check('外包改個人（不可抵稅）→ 應繳營業稅上升', (p) => { p.outsources[0].type = 'personal'; p.outsources[0].taxable = false; },
+    { netVAT: 'up' });
+  check('切成國外案 → 營業稅歸零', (p) => { p.overseas = true; },
+    { netVAT: 'zero', vatOut: 'zero' });
+  check('額外支出（已確認）→ 出現 extra 支出事件、今日餘額不變（日期在未來）', (p, st) => { st.extraExpenses = [{ id: 'x', name: '設備', type: 'equipment', amount: 80000, plannedDate: inFuture(10), confirmed: true }]; },
+    { extraOut: 'up', todayBalance: 'same' });
+  check('額外支出（未確認）→ 不影響現金流', (p, st) => { st.extraExpenses = [{ id: 'x', name: '設備', type: 'equipment', amount: 80000, plannedDate: inFuture(10), confirmed: false }]; },
+    { extraOut: 'same' });
+  check('每月固定支出 +20,000 → 固定支出事件、分攤固定成本、淨利都變', (p, st) => { st.monthlyFixedExpense += 20000; },
+    { fixedOut: 'up', fixedCost: 'up', profit: 'down' });
+  check('期初餘額 +100,000 → 今日餘額同步 +100,000', (p, st) => { st.bankBalance += 100000; },
+    { todayBalance: (a, b) => Math.round(a - b) === 100000 });
+  // 注意：單一案子時每個月本來就全額吸收，所以要跟一個同期案子一起算才看得出份額下降
+  check('填了實際工作區間（中間停工）→ 與同期案子合算時本案份額下降、延期佔用費為 0', (p) => { p.extendedDue = inFuture(45); p.workPeriods = [{ start: addDays(T, -60), end: addDays(T, -35) }, { start: addDays(T, -5), end: '' }]; },
+    { fixedShareWithPeer: 'down', overtime: 'zero', byMonthMatches: (a) => a === true });
+  check('歸檔（已交件）→ 仍計入現金流與收付款', (p) => { p.archived = true; p.deliveredAt = T; },
+    { income: 'same', receivableRows: 'same', payableRows: 'same' });
+  check('刪除 → 從現金流與收付款消失', (p) => { p.deleted = true; },
+    { income: 'zero', receivableRows: (a) => a === '', payableRows: (a) => a === '' });
+
+  const failed = checks.filter(c => c.通過 === '✗');
+  if (typeof console !== 'undefined' && console.table) console.table(checks);
+  console.log(failed.length === 0 ? `財務綁定檢查：${checks.length} 項全部通過` : `財務綁定檢查：${failed.length} 項失敗`, failed);
+  return { total: checks.length, failed: failed.length, checks };
+}
+if (typeof window !== 'undefined') window.__financeAudit = runFinanceAudit;
+
 // ---------- Celebration helpers ----------
 // Stage burst: emerald-leaning, small. Project complete: warm-spectrum, big.
 // Both colour sets lean warm/saturated — research on dopamine-eliciting palettes
@@ -689,6 +923,7 @@ const PROJECT_BURST_COLORS  = ['#10b981', '#34d399', '#fbbf24', '#eab308', '#fb7
 //   有子細項 → 已完成子細項數 / 全部子細項數
 //   無子細項 → 1（已完成）或 0（未完成）
 function itemProgress(it) {
+  if (isQtyItem(it)) return qtyRatio(it);
   if (it.children && it.children.length > 0) {
     const doneCount = it.children.filter(c => {
       const s = childStatus(c);
@@ -849,12 +1084,13 @@ function CompletionRing({ pct }) {
 
 // 戰績列：已結案專案的累積成就。案子歸檔後不是「消失」，是「入列」。
 // 「比預定早交」只累計提前的天數（completedAt 早於 due），遲交不倒扣——這裡是獎盃架，不是法庭。
-function TrophyStrip({ projects }) {
+function TrophyStrip({ projects, onHide }) {
   const count = projects.length;
   const totalBudget = projects.reduce((a, p) => a + (Number(p.budget) || 0), 0);
   const durations = projects
-    .filter(p => p.start && (p.completedAt || p.due))
-    .map(p => daysBetween(new Date(p.start), new Date(p.completedAt || p.due)))
+    .filter(p => p.start && (p.deliveredAt || p.completedAt || p.due))
+    // 工期 = 起始 → 實際交件日（不含等尾款的時間）；舊案沒有 deliveredAt 就退回完成日／原定交件日
+    .map(p => daysBetween(new Date(p.start), new Date(p.deliveredAt || p.completedAt || p.due)))
     .filter(d => d > 0);
   const avgDays = durations.length ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : null;
   const savedDays = projects.reduce((a, p) => {
@@ -874,11 +1110,57 @@ function TrophyStrip({ projects }) {
       {savedDays > 0 && (
         <><span className="sep">·</span><span className="trophy-item saved">比預定早交 <strong>{savedDays}</strong> 天</span></>
       )}
+      {onHide && <button className="trophy-hide" onClick={onHide} type="button" title="隱藏戰績列（之後可從上方「顯示戰績」找回）">隱藏</button>}
     </div>
   );
 }
 
 function StageBar({ variant, stages, selectedStageId, onClick, onCycle, onInsert, onDelete }) {
+  // 長條 variant（預設）：多鄰國式的一條進度條。
+  //   每段寬度 = 份量（固定，不再依狀態放大縮小）；每段依自己的完成比例從左填到右；
+  //   填色連續 → 看起來就是一整條，總填色長度 = projectPct，跟圓環數字永遠一致。
+  //   階段名稱移到長條下方，長條本身乾淨。點段落＝展開該階段，Shift+點＝切狀態（跟以前一樣）。
+  if (variant === 'bar') {
+    const weights = stages.map(getStageWeight);
+    return (
+      <div className="stage-bar variant-bar">
+        <div className="stage-track">
+          {stages.map((s, i) => {
+            const prog = stageProgress(s);
+            const cls = `segment status-${s.status} ${selectedStageId === s.id ? 'selected' : ''} ${prog > 0 && prog < 1 ? 'partial' : ''} ${prog >= 1 ? 'full' : ''}`;
+            const handleClick = (e) => { if (e.shiftKey) onCycle(s.id); else onClick(s.id); };
+            return (
+              <React.Fragment key={s.id}>
+                {i === 0 && <InsertGap onInsert={() => onInsert(0)} />}
+                <button className={cls} data-stage-id={s.id} onClick={handleClick}
+                  style={{ flexGrow: weights[i] }}
+                  title={`${s.label} ${Math.round(prog * 100)}%（份量 ${weights[i]}%）— Shift+點擊切換狀態`}>
+                  <span className="seg-fill" style={{ width: `${Math.round(prog * 1000) / 10}%` }} />
+                </button>
+                <InsertGap onInsert={() => onInsert(i + 1)} />
+              </React.Fragment>
+            );
+          })}
+        </div>
+        <div className="stage-labels">
+          {stages.map((s, i) => {
+            const prog = stageProgress(s);
+            return (
+              <React.Fragment key={s.id}>
+                {i === 0 && <span className="label-gap" />}
+                <button type="button" className={`seg-name status-${s.status} ${selectedStageId === s.id ? 'selected' : ''}`}
+                  style={{ flexGrow: weights[i] }} onClick={(e) => { if (e.shiftKey) onCycle(s.id); else onClick(s.id); }}>
+                  <span className="seg-name-text">{s.label}</span>
+                  <span className="seg-pct">{Math.round(prog * 100)}%</span>
+                </button>
+                <span className="label-gap" />
+              </React.Fragment>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
   return (
     <div className={`stage-bar variant-${variant}`}>
       {stages.map((s, i) => {
@@ -897,15 +1179,7 @@ function StageBar({ variant, stages, selectedStageId, onClick, onCycle, onInsert
             <span className="status-pip"></span>
             <span className="seg-label">{s.label}</span>
           </button>
-        ) : (
-          // 長條 variant：每段寬度依權重分配——拍攝（30）寬、交件收尾（5）窄，
-          // 讓「只剩收尾」的案子看起來就是只剩一小塊，而不是還有一大段。
-          <button key={s.id} className={cls} data-stage-id={s.id} onClick={handleClick}
-            style={{ flexGrow: getStageWeight(s) }}
-            title={`${s.label}（份量 ${getStageWeight(s)}%）— Shift+點擊切換狀態`}>
-            <span className="seg-label">{s.label}</span>
-          </button>
-        );
+        ) : null;
 
         return (
           <React.Fragment key={s.id}>
@@ -930,6 +1204,23 @@ function InsertGap({ onInsert }) {
 const ITEM_STATES = ['todo', 'active', 'blocked', 'done', 'confirmed'];
 const ITEM_STATE_LABELS = { todo: '未開始', active: '進行中', blocked: '排除問題', done: '已完成', confirmed: '已確認' };
 
+// 數量型細項：{ kind:'qty', qtyDone, qtyTotal }，例如「拍攝 47 / 100 卡」→ 這一項算 47%。
+// 用獨立欄位（不是把 done 變成數字），舊資料的 done: boolean 完全不受影響。
+const isQtyItem = (it) => !!it && it.kind === 'qty' && (Number(it.qtyTotal) || 0) > 0;
+const qtyRatio = (it) => {
+  const t = Number(it.qtyTotal) || 0; if (t <= 0) return 0;
+  return Math.max(0, Math.min(1, (Number(it.qtyDone) || 0) / t));
+};
+// 階段狀態自動連動（跟 ChecklistEditor.setItemStatus 同一套規則，抽出來給數量型共用）：
+//   全部到「已完成／已確認」→ done；原本 done 但不再全完成 → active；原本 todo 但有人動了 → active
+function deriveStageStatus(items, prevStatus) {
+  const allDone = items.length > 0 && items.every(it => { const s = itemStatus(it); return s === 'done' || s === 'confirmed'; });
+  const anyStarted = items.some(it => itemStatus(it) !== 'todo');
+  if (allDone) return 'done';
+  if (prevStatus === 'done' && !allDone) return 'active';
+  if (prevStatus === 'todo' && anyStarted) return 'active';
+  return prevStatus;
+}
 // 子細項的狀態：簡單從 status / done 推
 function childStatus(c) {
   if (c.status && ITEM_STATES.includes(c.status)) return c.status;
@@ -937,6 +1228,12 @@ function childStatus(c) {
 }
 // 項目狀態：有子細項時自動推導（不能手動覆蓋）；沒有時用本身的 status
 function itemStatus(it) {
+  if (isQtyItem(it)) {
+    const r = qtyRatio(it);
+    if (r >= 1) return it.status === 'confirmed' ? 'confirmed' : 'done';
+    if (it.status === 'blocked') return 'blocked';
+    return r > 0 ? 'active' : 'todo';
+  }
   if (it.children && it.children.length > 0) {
     const sts = it.children.map(childStatus);
     if (sts.every(s => s === 'confirmed')) return 'confirmed';
@@ -1117,6 +1414,27 @@ function PerItemSeriesForm({ parentId, onGenerate }) {
   );
 }
 
+// 新增數量型項目：名稱 + 總數（例如「拍攝」「100」）
+function AddQtyItemForm({ onAdd }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [total, setTotal] = useState('');
+  if (!open) return <button type="button" className="btn btn-ghost small" onClick={() => setOpen(true)} title="新增一個用數量計的項目，例如拍攝 100 卡">＋ 數量型項目</button>;
+  const submit = (e) => {
+    e.preventDefault();
+    if (onAdd(name, total)) { setName(''); setTotal(''); setOpen(false); }
+    else alert('請填名稱，總數要大於 0。');
+  };
+  return (
+    <form className="add-qty-form" onSubmit={submit}>
+      <input className="input" autoFocus placeholder="項目名稱（例：拍攝）" value={name} onChange={e => setName(e.target.value)} />
+      <input className="input qty-total-input" type="number" min="1" placeholder="總數" value={total} onChange={e => setTotal(e.target.value)} />
+      <button type="submit" className="add-item-btn" aria-label="新增">+</button>
+      <button type="button" className="btn btn-ghost small" onClick={() => setOpen(false)}>取消</button>
+    </form>
+  );
+}
+
 function ChecklistEditor({ stage, onUpdate }) {
   const [draft, setDraft] = useState('');
   const inputRef = useRef(null);
@@ -1167,6 +1485,31 @@ function ChecklistEditor({ stage, onUpdate }) {
     else if (status === 'done' && !allDone) status = 'active';
     else if (status === 'todo' && anyStarted) status = 'active';
     onUpdate({ ...stage, items, status });
+  };
+  // 數量型：改「已完成數」或「總數」，並照同一套規則連動階段狀態
+  const setItemQty = (id, patch) => {
+    const items = stage.items.map(it => {
+      if (it.id !== id) return it;
+      const total = Math.max(1, Math.round(Number(patch.qtyTotal ?? it.qtyTotal) || 1));
+      const done = Math.max(0, Math.min(total, Math.round(Number(patch.qtyDone ?? it.qtyDone) || 0)));
+      return { ...it, kind: 'qty', qtyTotal: total, qtyDone: done, done: done >= total };
+    });
+    onUpdate({ ...stage, items, status: deriveStageStatus(items, stage.status) });
+  };
+  // 把現有的打勾型項目轉成數量型（問總數）
+  const convertToQty = (id) => {
+    const it = stage.items.find(x => x.id === id); if (!it) return;
+    const raw = prompt(`「${it.text}」總共有幾個單位？（例如 100 卡、24 張）`, it.qtyTotal || '');
+    if (raw == null) return;
+    const total = parseInt(raw, 10);
+    if (!(total > 0)) { alert('請填大於 0 的整數。'); return; }
+    setItemQty(id, { qtyTotal: total, qtyDone: it.qtyDone || 0 });
+  };
+  const addQtyItem = (text, total) => {
+    const t = (text || '').trim(); const n = parseInt(total, 10);
+    if (!t || !(n > 0)) return false;
+    onUpdate({ ...stage, items: [...stage.items, { id: uid('i'), kind: 'qty', text: t, qtyDone: 0, qtyTotal: n, done: false, status: 'todo', start: '', end: '' }] });
+    return true;
   };
   const remove = (id) => {
     // 先試 top-level
@@ -1361,6 +1704,9 @@ function ChecklistEditor({ stage, onUpdate }) {
                 }} title="從預設項目選擇">
                   <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 5l4 4 4-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 </button>
+                {!isQtyItem(it) && !hasChildren && (
+                  <button className="item-bar-action" onClick={() => convertToQty(it.id)} title="設為數量型（例如 100 卡，做一卡進度就前進一點）">#</button>
+                )}
                 <button className="item-bar-action danger" onClick={() => { if (confirm('確定刪除這個項目？')) remove(it.id); }} title="刪除">×</button>
               </div>
               {it.editing === 'select' ? (
@@ -1451,7 +1797,17 @@ function ChecklistEditor({ stage, onUpdate }) {
                   onChange={e => onUpdate({ ...stage, items: stage.items.map(x => x.id === it.id ? { ...x, end: e.target.value, dueDate: '' } : x) })}
                 />
               </div>
-              {hasChildren ? (
+              {isQtyItem(it) ? (
+                <div className={`qty-control status-${st}`} title="數量型：每完成一單位按一下 +，進度條會立刻往前">
+                  <button type="button" className="qty-btn" onClick={() => setItemQty(it.id, { qtyDone: (Number(it.qtyDone) || 0) - 1 })} disabled={(Number(it.qtyDone) || 0) <= 0}>−</button>
+                  <input type="number" className="qty-input" min="0" max={it.qtyTotal} value={Number(it.qtyDone) || 0}
+                    onChange={e => setItemQty(it.id, { qtyDone: e.target.value })} />
+                  <span className="qty-sep">/</span>
+                  <button type="button" className="qty-total" onClick={() => convertToQty(it.id)} title="改總數">{it.qtyTotal}</button>
+                  <button type="button" className="qty-btn" onClick={() => setItemQty(it.id, { qtyDone: (Number(it.qtyDone) || 0) + 1 })} disabled={(Number(it.qtyDone) || 0) >= it.qtyTotal}>+</button>
+                  <span className="qty-pct">{Math.round(qtyRatio(it) * 100)}%</span>
+                </div>
+              ) : hasChildren ? (
                 <span className={`item-bar-child-count status-${st}`} title={`${progress.done}/${progress.total} 已完成`}>
                   {progress.done}/{progress.total}
                 </span>
@@ -1499,6 +1855,7 @@ function ChecklistEditor({ stage, onUpdate }) {
           />
           <button type="submit" className="add-item-btn" aria-label="新增">+</button>
         </form>
+        <AddQtyItemForm onAdd={addQtyItem} />
         {hasAnyAvailable && (
           <select className="input select item-quick-pick" defaultValue="" onChange={onQuickPick}>
             <option value="">+ 從預設加入…</option>
@@ -1545,6 +1902,8 @@ function StageDetail({ project, stageId, onClose, onUpdateStage, onDeleteStage, 
       ...it,
       status: 'done',
       done: true,
+      // 數量型：直接填滿
+      ...(isQtyItem(it) ? { qtyDone: it.qtyTotal } : {}),
       children: (it.children || []).map(c => ({ ...c, status: 'done', done: true })),
     }));
     update({ items, status: 'done' });
@@ -1731,6 +2090,89 @@ function InfoPanel({ project, onUpdate }) {
 // projects equals (months_with_any_project × monthly_fixed).
 //
 // Returns a Map<projectId, allocatedFixedCost (number)>.
+// ---------- 實際工作區間（決策 28）----------
+// 中間停工的案子可以填多段 {start, end}；最後一段 end 留空＝到交件日（含延期）為止。
+// 沒填的案子＝原本的「起始 → 交件」一段。分攤公式不變，只是「數天數」時改用這些區間。
+function hasWorkPeriods(p) {
+  return Array.isArray(p && p.workPeriods) && p.workPeriods.some(w => w && w.start);
+}
+function getWorkPeriods(p) {
+  const effEnd = (p && (p.extendedDue || p.due)) || '';
+  if (!hasWorkPeriods(p)) return (p && p.start && effEnd) ? [{ start: p.start, end: effEnd }] : [];
+  const list = p.workPeriods
+    .filter(w => w && w.start)
+    .map(w => ({ start: w.start, end: (w.end || effEnd) }))
+    .filter(w => w.end && w.start <= w.end)
+    .sort((a, b) => a.start.localeCompare(b.start));
+  // 重疊的段合併，避免同一天算兩次
+  const merged = [];
+  for (const w of list) {
+    const last = merged[merged.length - 1];
+    if (last && w.start <= last.end) { if (w.end > last.end) last.end = w.end; }
+    else merged.push({ ...w });
+  }
+  return merged;
+}
+// 這些區間在 [monthStart, monthEnd] 裡總共佔幾天（含頭尾）
+function daysInMonthForPeriods(periods, monthStart, monthEnd) {
+  let days = 0;
+  for (const w of periods) {
+    const ps = new Date(w.start); ps.setHours(0, 0, 0, 0);
+    const pe = new Date(w.end);   pe.setHours(0, 0, 0, 0);
+    if (isNaN(ps) || isNaN(pe)) continue;
+    const segStart = ps > monthStart ? ps : monthStart;
+    const segEnd   = pe < monthEnd   ? pe : monthEnd;
+    if (segStart > segEnd) continue;
+    days += Math.round((segEnd - segStart) / 86400000) + 1;
+  }
+  return days;
+}
+// 總工作天數（含頭尾）
+function totalWorkDays(p) {
+  return getWorkPeriods(p).reduce((a, w) => {
+    const d = daysBetween(new Date(w.start), new Date(w.end));
+    return a + (isNaN(d) ? 0 : Math.max(0, d) + 1);
+  }, 0);
+}
+
+// 某個案子在「專案損益」的分攤固定成本是怎麼湊出來的：逐月列出（天數、當月同時在跑的案子、拿到多少）。
+// 公式跟 computeFixedCostAllocations 完全相同，只是把加總的過程攤開；各月加總＝該案的分攤固定成本。
+function computeProjectFixedByMonth(projects, monthlyFixedExpense, projectId) {
+  const monthly = Number(monthlyFixedExpense) || 0;
+  const valid = (projects || []).filter(p => !p.deleted && p.start && p.due);
+  const target = valid.find(p => p.id === projectId);
+  if (!target || monthly === 0) return [];
+  const rows = [];
+  for (const w of getWorkPeriods(target)) {
+    const s = new Date(w.start), e = new Date(w.end);
+    if (isNaN(s) || isNaN(e) || s > e) continue;
+    const cursor = new Date(s.getFullYear(), s.getMonth(), 1);
+    const stop = new Date(e.getFullYear(), e.getMonth(), 1);
+    while (cursor <= stop) {
+      const key = `${cursor.getFullYear()}-${cursor.getMonth()}`;
+      if (!rows.find(r => r.key === key)) {
+        const monthStart = new Date(cursor.getFullYear(), cursor.getMonth(), 1); monthStart.setHours(0, 0, 0, 0);
+        const monthEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0); monthEnd.setHours(0, 0, 0, 0);
+        let totalDays = 0, myDays = 0; const others = [];
+        for (const p of valid) {
+          const d = daysInMonthForPeriods(getWorkPeriods(p), monthStart, monthEnd);
+          if (d <= 0) continue;
+          totalDays += d;
+          if (p.id === projectId) myDays = d; else others.push({ title: p.title, days: d });
+        }
+        if (myDays > 0) rows.push({
+          key, label: `${cursor.getFullYear()}/${cursor.getMonth() + 1}`,
+          days: myDays, totalDays, others,
+          amount: monthly * myDays / totalDays,
+          daysInMonth: monthEnd.getDate(),
+        });
+      }
+      cursor.setMonth(cursor.getMonth() + 1);
+    }
+  }
+  return rows;
+}
+
 function computeFixedCostAllocations(projects, monthlyFixedExpense) {
   const out = {};
   const monthly = Number(monthlyFixedExpense) || 0;
@@ -1744,14 +2186,16 @@ function computeFixedCostAllocations(projects, monthlyFixedExpense) {
   // Collect every (year, month) where at least one project is active.
   const monthSet = new Set();
   for (const p of valid) {
-    const s = new Date(p.start);
-    const e = new Date(p.extendedDue || p.due);
-    if (isNaN(s) || isNaN(e) || s > e) continue;
-    const cursor = new Date(s.getFullYear(), s.getMonth(), 1);
-    const stop = new Date(e.getFullYear(), e.getMonth(), 1);
-    while (cursor <= stop) {
-      monthSet.add(`${cursor.getFullYear()}-${cursor.getMonth()}`);
-      cursor.setMonth(cursor.getMonth() + 1);
+    for (const w of getWorkPeriods(p)) {   // 沒填實際區間＝起始→交件一段，跟以前一樣
+      const s = new Date(w.start);
+      const e = new Date(w.end);
+      if (isNaN(s) || isNaN(e) || s > e) continue;
+      const cursor = new Date(s.getFullYear(), s.getMonth(), 1);
+      const stop = new Date(e.getFullYear(), e.getMonth(), 1);
+      while (cursor <= stop) {
+        monthSet.add(`${cursor.getFullYear()}-${cursor.getMonth()}`);
+        cursor.setMonth(cursor.getMonth() + 1);
+      }
     }
   }
 
@@ -1767,13 +2211,8 @@ function computeFixedCostAllocations(projects, monthlyFixedExpense) {
     const daysPerProject = {};
     let totalDays = 0;
     for (const p of valid) {
-      const ps = new Date(p.start); ps.setHours(0, 0, 0, 0);
-      const pe = new Date(p.extendedDue || p.due);   pe.setHours(0, 0, 0, 0);
-      // Clamp to this month
-      const segStart = ps > monthStart ? ps : monthStart;
-      const segEnd   = pe < monthEnd   ? pe : monthEnd;
-      if (segStart > segEnd) continue; // no overlap with this month
-      const days = Math.round((segEnd - segStart) / 86400000) + 1; // inclusive
+      const days = daysInMonthForPeriods(getWorkPeriods(p), monthStart, monthEnd); // 含頭尾；沒填區間＝起始→交件
+      if (days <= 0) continue; // no overlap with this month
       daysPerProject[p.id] = days;
       totalDays += days;
     }
@@ -1792,6 +2231,9 @@ function computeFixedCostAllocations(projects, monthlyFixedExpense) {
 // 用付款日決定資金何時到位。到月底為止累計收到的款項 − 外包 = 可付房租的錢。
 // 款項還沒進來的案子不能付房租。上月缺口會遞延，新款項進來時先付本月、再補舊洞。
 // 案子結束後餘額繼續扣到花完為止。
+// ⚠ 這張表是「現金版」，跟「專案損益」的天數比例分攤是兩套刻意不同的規則（使用者 2026-09-08 確認要這套）。
+//   收款時間：已收 → 實際入帳日；未收 → 表定收款日（不推到明天，否則沒標記已收的案子會被當成沒錢付房租）。
+//   外包：只扣到月底為止「已付（實付日）或表定要付（預估付款日）」的，還沒付的錢還在戶頭裡。
 function computeMonthlyFixedBreakdown(projects, monthlyFixedExpense) {
   var monthly = Number(monthlyFixedExpense) || 0;
   var valid = (projects || []).filter(function(p) { return !p.deleted && p.start && p.due; });
@@ -1809,14 +2251,21 @@ function computeMonthlyFixedBreakdown(projects, monthlyFixedExpense) {
       var pay = payments[pi];
       if (!pay.dueDate) continue;
       var amount = budget * (Number(pay.percentage) || 0) / 100;
-      var d = new Date(pay.dueDate); d.setHours(0, 0, 0, 0);
+      // 已收就用實際入帳日（使用者在專案裡標的），沒收到才用表定日
+      var d = new Date((isPaymentReceived(pay) && pay.receivedDate) ? pay.receivedDate : pay.dueDate); d.setHours(0, 0, 0, 0);
       schedule.push({ date: d, amount: amount, label: pay.label, percentage: Number(pay.percentage) || 0 });
     }
     schedule.sort(function(a, b) { return a.date - b.date; });
     paymentSchedules[p.id] = schedule;
-    var outsourceTotal = 0;
-    (p.outsources || []).forEach(function(o) { outsourceTotal += Number(o.amount) || 0; });
-    outsourceMap[p.id] = outsourceTotal;
+    // 外包：已付 → 實付日；未付 → 預估付款日（尾款後 5 天）；完全沒日期的保守當作一開始就扣
+    var outs = [];
+    (p.outsources || []).forEach(function(o) {
+      var amt = Number(o.amount) || 0; if (amt === 0) return;
+      var ds = isOutsourcePaid(o) ? (o.paidDate || '') : getOutsourcePayDate(p);
+      var od = ds ? new Date(ds) : null; if (od) od.setHours(0, 0, 0, 0);
+      outs.push({ date: (od && !isNaN(od)) ? od : null, amount: amt });
+    });
+    outsourceMap[p.id] = outs;
   }
 
   // 到某月底為止，案子累計收到多少錢 − 外包 = 可用資金上限
@@ -1826,7 +2275,13 @@ function computeMonthlyFixedBreakdown(projects, monthlyFixedExpense) {
     for (var i = 0; i < schedule.length; i++) {
       if (schedule[i].date <= monthEnd) received += schedule[i].amount;
     }
-    return Math.max(0, received - outsourceMap[projId]);
+    // 只扣「到月底為止已經（或表定要）付出去」的外包，還沒付的錢還在戶頭裡可以付房租
+    var paidOut = 0;
+    var outs = outsourceMap[projId] || [];
+    for (var k = 0; k < outs.length; k++) {
+      if (outs[k].date === null || outs[k].date <= monthEnd) paidOut += outs[k].amount;
+    }
+    return Math.max(0, received - paidOut);
   }
 
   // 取得到某月底已收到哪些款項的標示文字
@@ -1850,14 +2305,17 @@ function computeMonthlyFixedBreakdown(projects, monthlyFixedExpense) {
   var monthSet = new Set();
   for (var i = 0; i < valid.length; i++) {
     var p = valid[i];
-    var s = new Date(p.start);
-    var e = new Date(p.extendedDue || p.due);
-    if (isNaN(s) || isNaN(e) || s > e) continue;
-    var cursor = new Date(s.getFullYear(), s.getMonth(), 1);
-    var stop = new Date(e.getFullYear(), e.getMonth(), 1);
-    while (cursor <= stop) {
-      monthSet.add(cursor.getFullYear() + '-' + cursor.getMonth());
-      cursor.setMonth(cursor.getMonth() + 1);
+    var periodsOfP = getWorkPeriods(p);   // 沒填實際區間＝起始→交件一段（決策 28）
+    for (var wi = 0; wi < periodsOfP.length; wi++) {
+      var s = new Date(periodsOfP[wi].start);
+      var e = new Date(periodsOfP[wi].end);
+      if (isNaN(s) || isNaN(e) || s > e) continue;
+      var cursor = new Date(s.getFullYear(), s.getMonth(), 1);
+      var stop = new Date(e.getFullYear(), e.getMonth(), 1);
+      while (cursor <= stop) {
+        monthSet.add(cursor.getFullYear() + '-' + cursor.getMonth());
+        cursor.setMonth(cursor.getMonth() + 1);
+      }
     }
   }
 
@@ -1908,12 +2366,8 @@ function computeMonthlyFixedBreakdown(projects, monthlyFixedExpense) {
       var availableMargin = cumulativeMarginByMonth(proj.id, monthEnd);
       var rem = availableMargin - absorbed[proj.id];
       if (rem <= 0) continue;
-      var ps = new Date(proj.start); ps.setHours(0, 0, 0, 0);
-      var pe = new Date(proj.extendedDue || proj.due); pe.setHours(0, 0, 0, 0);
-      var segStart = ps > monthStart ? ps : monthStart;
-      var segEnd = pe < monthEnd ? pe : monthEnd;
-      if (segStart > segEnd) continue;
-      var days = Math.round((segEnd - segStart) / 86400000) + 1;
+      var days = daysInMonthForPeriods(getWorkPeriods(proj), monthStart, monthEnd); // 含頭尾；沒填區間＝起始→交件（決策 28）
+      if (days <= 0) continue;
       activeCandidates.push({ id: proj.id, title: proj.title, days: days });
       totalDays += days;
     }
@@ -2021,6 +2475,9 @@ function computeMonthlyFixedBreakdown(projects, monthlyFixedExpense) {
 
 // 延期佔用費（差額法）：比較「有延期」vs「沒延期」的分攤結果，差額就是延期造成的額外成本。
 // 不會重複收費、帳永遠對得上。沒有任何案延期時回傳空物件。
+
+// 延期佔用費（差額法）：比較「有延期」vs「沒延期」的分攤結果，差額就是延期造成的額外成本。
+// 不會重複收費、帳永遠對得上。沒有任何案延期時回傳空物件。
 function computeOvertimeAllocations(projects, monthlyFixedExpense) {
   const monthly = Number(monthlyFixedExpense) || 0;
   if (monthly === 0) return {};
@@ -2031,9 +2488,12 @@ function computeOvertimeAllocations(projects, monthlyFixedExpense) {
   // 假設全部沒延期的分攤
   var stripped = projects.map(function(p) { return p.extendedDue ? Object.assign({}, p, { extendedDue: '' }) : p; });
   const hypo = computeFixedCostAllocations(stripped, monthly);
+  var segmented = {};
+  (projects || []).forEach(function(p) { if (hasWorkPeriods(p)) segmented[p.id] = true; });
   var out = {};
   for (var id in real) {
-    out[id] = Math.max(0, (real[id] || 0) - (hypo[id] || 0));
+    // 填了實際工作區間的案子：真實區間已經講明，沒有「原定 vs 延期」的差額概念
+    out[id] = segmented[id] ? 0 : Math.max(0, (real[id] || 0) - (hypo[id] || 0));
   }
   return out;
 }
@@ -2046,7 +2506,11 @@ function computeOvertimeAllocations(projects, monthlyFixedExpense) {
 function calcCosts(project, fixedCostOverride, monthlyFixedExpenseGlobal, overtimeOverride) {
   const start = project.start ? new Date(project.start) : null;
   const effDue = new Date(project.extendedDue || project.due || '');
-  const days = (start && !isNaN(start) && !isNaN(effDue)) ? Math.max(1, daysBetween(start, effDue)) : 0;
+  const isSegmented = hasWorkPeriods(project);
+  const workSegments = isSegmented ? getWorkPeriods(project).length : 1;
+  const days = isSegmented
+    ? Math.max(1, totalWorkDays(project))
+    : ((start && !isNaN(start) && !isNaN(effDue)) ? Math.max(1, daysBetween(start, effDue)) : 0);
   const months = days / 30;
 
   let totalFixedAlloc;
@@ -2080,7 +2544,7 @@ function calcCosts(project, fixedCostOverride, monthlyFixedExpenseGlobal, overti
   const fixedCost = totalFixedAlloc;
   const profit = budget - fixedCost - outsourceTotal - netVAT;
 
-  return { days, months, fixedCost, baseFixedCost, overtimeFixed, outsourceTotal, companyOutsource, personalOutsource, salesVAT, creditableInputTax, netVAT, profit, preTax, isOverseas };
+  return { days, months, fixedCost, baseFixedCost, overtimeFixed, outsourceTotal, companyOutsource, personalOutsource, salesVAT, creditableInputTax, netVAT, profit, preTax, isOverseas, isSegmented, workSegments };
 }
 
 // ---------- Cash flow timeline ----------
@@ -2116,19 +2580,28 @@ function buildCashflowSeries(projects, settings, horizonMonths = 12) {
     const budget = Number(p.budget) || 0;
     const payments = getPayments(p);
     for (const pay of payments) {
-      if (!pay.dueDate) continue;
-      const d = new Date(pay.dueDate);
+      // 已收 → 實際入帳日；未收 → 預計日（逾期未收則推到今天，錢還沒進來就不能算進餘額）
+      const effStr = getPaymentEffectiveDate(pay);
+      if (!effStr) continue;
+      const d = new Date(effStr);
       if (isNaN(d) || d < start || d > end) continue;
       const amt = budget * (Number(pay.percentage) || 0) / 100;
       if (amt === 0) continue;
-      events.push({ date: d, amount: amt, label: `${p.title} · ${pay.label}`, kind: 'income' });
+      const received = isPaymentReceived(pay);
+      const overdue = !received && pay.dueDate && new Date(pay.dueDate) < TODAY;
+      events.push({
+        date: d,
+        amount: amt,
+        label: `${p.title} · ${pay.label}${received ? '（已收）' : overdue ? '（逾期未收）' : '（預估）'}`,
+        kind: received ? 'income-received' : 'income',
+      });
     }
     // 外包付款：每筆獨立成事件。已付用 paidDate（kind='outsource-paid'），未付用 outsourcePayDate（kind='outsource'）
     for (const o of (p.outsources || [])) {
       const amt = Number(o.amount) || 0;
       if (amt === 0) continue;
       const paid = isOutsourcePaid(o);
-      const dateStr = paid ? (o.paidDate || '') : getOutsourcePayDate(p);
+      const dateStr = getOutsourceEffectivePayDate(p, o);
       if (!dateStr) continue;
       const d = new Date(dateStr);
       if (isNaN(d) || d < start || d > end) continue;
@@ -2355,7 +2828,8 @@ function buildCalendarEvents(projects) {
     for (const pay of payments) {
       if (!pay.dueDate) continue;
       events.push({
-        date: pay.dueDate,
+        date: (isPaymentReceived(pay) && pay.receivedDate) ? pay.receivedDate : pay.dueDate,
+        received: isPaymentReceived(pay),
         kind: 'payment-in',
         projectId: p.id,
         projectTitle: p.title,
@@ -2447,7 +2921,9 @@ function patchForCalendarEvent(project, eventInfo, newDate) {
     }
     case 'payment-in':
       return {
-        payments: getPayments(project).map(p => p.id === paymentId ? { ...p, dueDate: newDate } : p),
+        // 已收的款項拖動改的是「實際入帳日」；未收的才是改預計日
+        payments: getPayments(project).map(p => p.id !== paymentId ? p
+          : isPaymentReceived(p) ? { ...p, receivedDate: newDate } : { ...p, dueDate: newDate }),
       };
     case 'payment-out':
       // 未付合併事件 → 改 outsourcePayDate（所有未付的外包跟著移動）
@@ -2529,7 +3005,11 @@ function buildExportData(allProjects, settings) {
         "比例": (Number(pay.percentage) || 0) + '%',
         "預計收款日": pay.dueDate || null,
         "金額": Math.round((Number(p.budget) || 0) * (Number(pay.percentage) || 0) / 100),
+        "已收": isPaymentReceived(pay),
+        "實際入帳日": isPaymentReceived(pay) ? (pay.receivedDate || null) : null,
       })),
+      "收款狀態": { none: '未收款', partial: '部分收款', full: '已收齊' }[getBillingStatus(p)],
+      "實際交件日": p.deliveredAt || null,
       "外包預估付款日": getOutsourcePayDate(p) || null,
       "外包明細": (p.outsources || []).map(o => ({
         "項目": o.name || '(未命名)',
@@ -2569,7 +3049,8 @@ function buildExportData(allProjects, settings) {
       .map(pt => ({
         "日期": toISODate(pt.date),
         "事件": pt.label,
-        "類型": pt.kind === 'income' ? '收入'
+        "類型": pt.kind === 'income-received' ? '收入（已收）'
+              : pt.kind === 'income' ? '收入（預估）'
               : pt.kind === 'fixed' ? '每月固定支出'
               : pt.kind === 'outsource' ? '外包付款（預估）'
               : pt.kind === 'outsource-paid' ? '外包付款（已付）'
@@ -2684,6 +3165,18 @@ function PaymentSchedule({ project, onUpdate }) {
     onUpdate({ ...project, outsourcePayDate: val });
   };
 
+  // 標記「已收到」：第一次打勾預設入帳日＝今天，可再改
+  const setReceived = (id, received) => {
+    const next = payments.map(p => p.id === id
+      ? { ...p, received: received, receivedDate: received ? (p.receivedDate || defaultActualDate(p.dueDate)) : null }
+      : p);
+    onUpdate({ ...project, payments: next });
+  };
+  const setReceivedDate = (id, receivedDate) => {
+    const next = payments.map(p => p.id === id ? { ...p, receivedDate } : p);
+    onUpdate({ ...project, payments: next });
+  };
+
   // Delete a payment row. Remaining row(s) get rescaled so total stays 100%.
   // Common case: delete 頭款 → 尾款 becomes 100%.
   const deletePayment = (id) => {
@@ -2723,10 +3216,11 @@ function PaymentSchedule({ project, onUpdate }) {
           <div className="center">比例</div>
           <div>預計收款日</div>
           <div className="right">金額（含稅）</div>
+          <div>已收</div>
           <div></div>
         </div>
         {payments.map(p => (
-          <div key={p.id} className="payment-row">
+          <div key={p.id} className={`payment-row ${isPaymentReceived(p) ? 'is-received' : ''}`}>
             <div className="payment-label">{p.label}</div>
             <div className="pct-input-wrap">
               <input type="number" className="num-input pct-input"
@@ -2739,6 +3233,18 @@ function PaymentSchedule({ project, onUpdate }) {
               value={p.dueDate || ''}
               onChange={e => setDate(p.id, e.target.value)} />
             <div className="num-val right">{fmtNT(budget * (Number(p.percentage) || 0) / 100)}</div>
+            <div className="received-cell">
+              <div className={`check-box ${isPaymentReceived(p) ? 'checked' : ''}`}
+                onClick={() => setReceived(p.id, !isPaymentReceived(p))}
+                title={isPaymentReceived(p) ? '已收到，點一下取消' : '錢進來了？點一下標記已收'}>
+              </div>
+              {isPaymentReceived(p) && (
+                <input type="date" className="date-input compact received-date"
+                  value={p.receivedDate || ''}
+                  onChange={e => setReceivedDate(p.id, e.target.value)}
+                  title="實際入帳日" />
+              )}
+            </div>
             {payments.length > 1 ? (
               <button className="delete-item visible" onClick={() => { if (confirm('確定刪除這筆款項？剩餘的會自動補到 100%。')) deletePayment(p.id); }} title="刪除這筆款項（剩餘的會自動補到 100%）">×</button>
             ) : <div></div>}
@@ -2775,7 +3281,10 @@ function PaymentSchedule({ project, onUpdate }) {
   );
 }
 
-function CostPanel({ project, onUpdate, fixedCostShare, overtimeShare, monthlyFixedExpense, onOpenCashSettings, outsourceRoles, customOutsourceRoles, onUpdateCustomOutsourceRoles }) {
+function CostPanel({ project, onUpdate, fixedCostShare, overtimeShare, monthlyFixedExpense, onOpenCashSettings, outsourceRoles, customOutsourceRoles, onUpdateCustomOutsourceRoles, onOpenFullFinance, presentation }) {
+  // 外包區可收折：收起時連外包總額一起藏（給客戶看時用）；簡報模式預設收起
+  const [outOpen, setOutOpen] = useState(!presentation);
+  useEffect(() => { setOutOpen(!presentation); }, [presentation]);
   const c = useMemo(
     () => calcCosts(project, fixedCostShare, monthlyFixedExpense, overtimeShare),
     [project, fixedCostShare, overtimeShare, monthlyFixedExpense]
@@ -2805,33 +3314,49 @@ function CostPanel({ project, onUpdate, fixedCostShare, overtimeShare, monthlyFi
     onUpdateCustomOutsourceRoles && onUpdateCustomOutsourceRoles([...(customOutsourceRoles || []), name]);
   };
 
+  // 這個面板只放「跟這個案子直接相關、可以給客戶看」的數字：合約、外包、收款。
+  // 固定成本分攤、稅務、淨利屬於公司內部財務，統一在「財務 → 專案損益」看。
+  const billing = getBillingStatus(project);
+  const receivedAmt = getReceivedAmount(project);
   const profitPct = project.budget ? Math.round((c.profit / project.budget) * 100) : 0;
-  const extDays = (project.extendedDue && project.due && new Date(project.extendedDue) > new Date(project.due))
-    ? daysBetween(new Date(project.due), new Date(project.extendedDue)) : 0;
 
   return (
     <div className="cost-panel">
       <div className="cost-header">
         <div>
-          <div className="detail-eyebrow">{project.title} · 成本結構</div>
-          <h3 className="detail-title">財務概覽</h3>
+          <div className="detail-eyebrow">{project.title} · 合約與外包</div>
+          <h3 className="detail-title">收付款</h3>
+          {onOpenFullFinance && (
+            <button className="btn btn-ghost small full-finance-btn" onClick={() => onOpenFullFinance(project.id)} title="到財務頁看這個案子的完整計算（固定成本分攤、稅務、淨利）">
+              完整損益 →
+            </button>
+          )}
         </div>
         <div className="cost-summary">
           <div className="summary-item">
             <div className="summary-label">合約金額（含稅）</div>
             <div className="summary-value">{fmtNT(project.budget)}</div>
           </div>
-          <div className="summary-item">
-            <div className="summary-label">未稅金額</div>
-            <div className="summary-value">{fmtNT(c.preTax)}</div>
+          {outOpen && (
+            <div className="summary-item">
+              <div className="summary-label">外包費用</div>
+              <div className="summary-value">{fmtNT(c.outsourceTotal)}</div>
+            </div>
+          )}
+          <div className={`summary-item ${billing === 'full' ? 'profit' : ''}`}>
+            <div className="summary-label">已收款</div>
+            <div className="summary-value">
+              {fmtNT(receivedAmt)}
+              <span className="pct">{project.budget ? Math.round(receivedAmt / project.budget * 100) : 0}%</span>
+            </div>
           </div>
-          <div className="summary-item">
-            <div className="summary-label">總成本</div>
-            <div className="summary-value">{fmtNT(c.fixedCost + c.outsourceTotal + c.netVAT)}</div>
-          </div>
-          <div className={`summary-item profit ${c.profit < 0 ? 'negative' : ''}`}>
-            <div className="summary-label">淨利</div>
-            <div className="summary-value">{fmtNT(c.profit)} <span className="pct">{profitPct}%</span></div>
+          {/* 一眼看到賺或賠：賺＝大綠字 %，賠＝大紅字負金額（分攤明細在財務頁） */}
+          <div className={`summary-item big-pnl ${c.profit < 0 ? 'loss' : 'gain'}`} title="淨利 = 合約 − 外包 − 分攤固定成本 − 營業稅。完整計算按「完整損益 →」">
+            <div className="summary-label">{c.profit < 0 ? '虧損' : '利潤'}</div>
+            <div className="summary-value big">
+              {c.profit < 0 ? `−${fmtNT(Math.abs(c.profit))}` : `${profitPct}%`}
+            </div>
+            <div className="summary-sub">{c.profit < 0 ? `${profitPct}%` : fmtNT(c.profit)}</div>
           </div>
         </div>
       </div>
@@ -2844,112 +3369,44 @@ function CostPanel({ project, onUpdate, fixedCostShare, overtimeShare, monthlyFi
       </div>
 
       {detailsOpen && (<>
-      <div className="cost-grid">
-        {/* Fixed cost */}
-        <div className="cost-block">
-          <div className="cost-block-h">
-            <span>公司固定成本</span>
-          </div>
-          <div className="cost-row-line">
-            <span>每月固定支出（全域）</span>
-            <span className="num-val muted">
-              {fmtNT(monthlyFixedExpense || 0)}
-              {onOpenCashSettings && (
-                <button className="link-btn-inline" onClick={onOpenCashSettings} title="到全域現金流設定修改">改</button>
-              )}
-            </span>
-          </div>
-          <div className="cost-row-line">
-            <span>專案起始</span>
-            <input type="date" className="date-input compact"
-              value={project.start || ''}
-              onChange={e => update({ start: e.target.value })} />
-          </div>
-          <div className="cost-row-line">
-            <span>跨期天數</span>
-            <span className="num-val">{c.days} 天 ({c.months.toFixed(1)} 月)</span>
-          </div>
-          <div className="cost-row-line emphasis">
-            <span>{c.overtimeFixed > 0 ? '分攤固定成本（原訂期間）' : '實際分攤固定成本'}</span>
-            <span className="num-val">{fmtNT(c.baseFixedCost)}</span>
-          </div>
-          {c.overtimeFixed > 0 && (
-            <div className="cost-row-line emphasis overtime">
-              <span>延期佔用費（加時 {extDays} 天）</span>
-              <span className="num-val">＋{fmtNT(c.overtimeFixed)}</span>
-            </div>
-          )}
-          {c.overtimeFixed > 0 && (
-            <div className="cost-row-line emphasis total-fixed">
-              <span>固定成本合計</span>
-              <span className="num-val">{fmtNT(c.fixedCost)}</span>
-            </div>
-          )}
-          <div className="cost-row-hint">
-            按月分攤：當月固定支出由當月活躍的所有專案，依各案在當月的天數比例分擔。當月只有一案時，該案吸收當月全額。
-            {c.overtimeFixed > 0 && <><br/>此案已延期：原訂交件後多佔用的時間，按實際逾期天數以全額月費率單獨向本案收取，<strong>不影響其他案的分攤</strong>。</>}
-          </div>
+      <div className="cost-type-row">
+        <span className="cost-type-label">案件類型</span>
+        <div className="type-toggle">
+          <button className={!project.overseas ? 'on' : ''} onClick={() => update({ overseas: false })}>國內案</button>
+          <button className={project.overseas ? 'on' : ''} onClick={() => update({ overseas: true })}>國外案</button>
         </div>
-
-        {/* Tax */}
-        <div className="cost-block">
-          <div className="cost-block-h">
-            <span>稅務</span>
-          </div>
-          <div className="cost-row-line">
-            <span>案件類型</span>
-            <div className="type-toggle">
-              <button className={!project.overseas ? 'on' : ''} onClick={() => update({ overseas: false })}>國內案</button>
-              <button className={project.overseas ? 'on' : ''} onClick={() => update({ overseas: true })}>國外案</button>
-            </div>
-          </div>
-          {c.isOverseas ? (
-            <>
-              <div className="cost-row-line emphasis">
-                <span>應繳營業稅</span>
-                <span className="num-val">{fmtNT(0)}</span>
-              </div>
-              <div className="tax-hint">境外交易依加值型及非加值型營業稅法規定，於一定金額內免徵營業稅。</div>
-            </>
-          ) : (
-            <>
-              <div className="cost-row-line">
-                <span>銷項稅（含稅價拆算）</span>
-                <span className="num-val">{fmtNT(c.salesVAT)}</span>
-              </div>
-              <div className="cost-row-line">
-                <span>可抵扣進項稅</span>
-                <span className="num-val">− {fmtNT(c.creditableInputTax)}</span>
-              </div>
-              <div className="cost-row-line emphasis">
-                <span>應繳營業稅</span>
-                <span className="num-val">{fmtNT(c.netVAT)}</span>
-              </div>
-              <div className="tax-hint">合約金額為含稅價，稅額 = 含稅價 ÷ 1.05 × 5%。公司外包可抵進項稅，個人外包無發票不可抵。<br/>此處顯示單案估算，<strong>公司實際繳稅</strong>會跨案合併（同期銷項減進項，含跨期留底結轉），以現金流量表為準。</div>
-            </>
-          )}
-        </div>
+        <span className="cost-type-hint">{project.overseas ? '國外案免營業稅' : '含稅價，稅務明細在「財務 → 專案損益」'}</span>
       </div>
 
       {/* Payment schedule (cash in) */}
       <PaymentSchedule project={project} onUpdate={onUpdate} />
 
       {/* Outsource list */}
-      <div className="cost-section">
+      <div className={`cost-section outsource-section ${outOpen ? '' : 'collapsed'}`}>
         <div className="cost-section-h">
-          <div className="cost-block-h">
+          <button type="button" className="cost-block-h collapsible-h" onClick={() => setOutOpen(o => !o)} title={outOpen ? '收起外包明細（連金額一起藏）' : '展開外包明細'}>
+            <span className="chevron">{outOpen ? '▾' : '▸'}</span>
             <span>外包支出</span>
-            <span className="ghost-pill">公司 {fmtNT(c.companyOutsource)}</span>
-            <span className="ghost-pill">個人 {fmtNT(c.personalOutsource)}</span>
-          </div>
-          <div style={{ display: 'flex', gap: 6 }}>
-            {onUpdateCustomOutsourceRoles && (
-              <button className="btn btn-ghost small" onClick={addCustomRole}>+ 新增角色</button>
+            {outOpen ? (
+              <>
+                <span className="ghost-pill">公司 {fmtNT(c.companyOutsource)}</span>
+                <span className="ghost-pill">個人 {fmtNT(c.personalOutsource)}</span>
+              </>
+            ) : (
+              <span className="ghost-pill muted">已收起</span>
             )}
-            <button className="btn btn-ghost small" onClick={addOutsource}>+ 新增外包項目</button>
-          </div>
+          </button>
+          {outOpen && (
+            <div style={{ display: 'flex', gap: 6 }}>
+              {onUpdateCustomOutsourceRoles && (
+                <button className="btn btn-ghost small" onClick={addCustomRole}>+ 新增角色</button>
+              )}
+              <button className="btn btn-ghost small" onClick={addOutsource}>+ 新增外包項目</button>
+            </div>
+          )}
         </div>
 
+        {outOpen && (
         <div className="outsource-list">
           <div className="outsource-row head">
             <div>角色 / 項目</div>
@@ -3003,14 +3460,250 @@ function CostPanel({ project, onUpdate, fixedCostShare, overtimeShare, monthlyFi
             );
           })}
         </div>
+        )}
       </div>
       </>)}
     </div>
   );
 }
 
+// ---------- 單案財務（完整版）----------
+// 這就是原本專案卡片「$」面板的完整內容，一字不減地搬到財務頁：
+// 可編輯的（外包、收款日、國內外、起始日）照樣可編輯。卡片上的面板改為精簡版給客戶看。
+function ProjectFinanceDetail({ project, onUpdate, fixedCostShare, overtimeShare, monthlyFixedExpense, onOpenCashSettings, outsourceRoles, customOutsourceRoles, onUpdateCustomOutsourceRoles, allProjects }) {
+  const [fixedDetailOpen, setFixedDetailOpen] = useState(false);
+  const fixedByMonth = useMemo(
+    () => (allProjects ? computeProjectFixedByMonth(allProjects, monthlyFixedExpense, project.id) : []),
+    [allProjects, monthlyFixedExpense, project.id, project.workPeriods, project.start, project.due, project.extendedDue]
+  );
+  const c = useMemo(
+    () => calcCosts(project, fixedCostShare, monthlyFixedExpense, overtimeShare),
+    [project, fixedCostShare, overtimeShare, monthlyFixedExpense]
+  );
+  const update = (patch) => onUpdate({ ...project, ...patch });
+
+  const addOutsource = () => {
+    update({ outsources: [...(project.outsources || []), { id: uid('o'), name: '', type: 'company', amount: 0, taxable: true, paid: false, paidDate: null }] });
+  };
+  const updateOutsource = (id, patch) => {
+    update({ outsources: project.outsources.map(o => o.id === id ? { ...o, ...patch } : o) });
+  };
+  const removeOutsource = (id) => {
+    update({ outsources: project.outsources.filter(o => o.id !== id) });
+  };
+  const addCustomRole = () => {
+    const raw = window.prompt('新增外包角色名稱（之後在所有專案的下拉都會出現）：');
+    if (raw == null) return;
+    const name = raw.trim();
+    if (!name) return;
+    if ((outsourceRoles || []).includes(name)) { alert(`角色「${name}」已經存在。`); return; }
+    onUpdateCustomOutsourceRoles && onUpdateCustomOutsourceRoles([...(customOutsourceRoles || []), name]);
+  };
+
+  const profitPct = project.budget ? Math.round((c.profit / project.budget) * 100) : 0;
+  const extDays = (project.extendedDue && project.due && new Date(project.extendedDue) > new Date(project.due))
+    ? daysBetween(new Date(project.due), new Date(project.extendedDue)) : 0;
+
+  return (
+    <div className="cost-panel finance-detail">
+      <div className="cost-header">
+        <div>
+          <div className="detail-eyebrow">{project.title} · {project.client}</div>
+          <h3 className="detail-title">財務概覽</h3>
+        </div>
+        <div className="cost-summary">
+          <div className="summary-item">
+            <div className="summary-label">合約金額（含稅）</div>
+            <div className="summary-value">{fmtNT(project.budget)}</div>
+          </div>
+          <div className="summary-item">
+            <div className="summary-label">未稅金額</div>
+            <div className="summary-value">{fmtNT(c.preTax)}</div>
+          </div>
+          <div className="summary-item">
+            <div className="summary-label">總成本</div>
+            <div className="summary-value">{fmtNT(c.fixedCost + c.outsourceTotal + c.netVAT)}</div>
+          </div>
+          <div className={`summary-item profit ${c.profit < 0 ? 'negative' : ''}`}>
+            <div className="summary-label">淨利</div>
+            <div className="summary-value">{fmtNT(c.profit)} <span className="pct">{profitPct}%</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div className="cost-grid">
+        {/* Fixed cost */}
+        <div className="cost-block">
+          <div className="cost-block-h"><span>公司固定成本</span></div>
+          <div className="cost-row-line">
+            <span>每月固定支出（全域）</span>
+            <span className="num-val muted">
+              {fmtNT(monthlyFixedExpense || 0)}
+              {onOpenCashSettings && (
+                <button className="link-btn-inline" onClick={onOpenCashSettings} title="到全域現金流設定修改">改</button>
+              )}
+            </span>
+          </div>
+          <div className="cost-row-line">
+            <span>專案起始</span>
+            <input type="date" className="date-input compact" value={project.start || ''} onChange={e => update({ start: e.target.value })} />
+          </div>
+          <div className="cost-row-line">
+            <span>{c.isSegmented ? '實際工作天數' : '跨期天數'}</span>
+            <span className="num-val">{c.days} 天 ({c.months.toFixed(1)} 月){c.isSegmented ? `・${c.workSegments} 段` : ''}</span>
+          </div>
+          {c.isSegmented && (
+            <div className="cost-row-line">
+              <span>工作區間</span>
+              <span className="num-val muted">{getWorkPeriods(project).map(w => `${fmtDate(new Date(w.start))}–${w.end === (project.extendedDue || project.due) && !(project.workPeriods || []).find(x => x.start === w.start && x.end) ? '進行中' : fmtDate(new Date(w.end))}`).join('、')}</span>
+            </div>
+          )}
+          <div className="cost-row-line emphasis">
+            <span>{c.overtimeFixed > 0 ? '分攤固定成本（原訂期間）' : '實際分攤固定成本'}</span>
+            <span className="num-val">{fmtNT(c.baseFixedCost)}</span>
+          </div>
+          {c.overtimeFixed > 0 && (
+            <div className="cost-row-line emphasis overtime">
+              <span>延期佔用費（加時 {extDays} 天）</span>
+              <span className="num-val">＋{fmtNT(c.overtimeFixed)}</span>
+            </div>
+          )}
+          {c.overtimeFixed > 0 && (
+            <div className="cost-row-line emphasis total-fixed">
+              <span>固定成本合計</span>
+              <span className="num-val">{fmtNT(c.fixedCost)}</span>
+            </div>
+          )}
+          <div className="cost-row-hint">
+            按月分攤：當月固定支出由當月活躍的所有專案，依各案在當月的天數比例分擔。當月只有一案時，該案吸收當月全額。
+            {c.overtimeFixed > 0 && <><br/>此案已延期：原訂交件後多佔用的時間，按實際逾期天數以全額月費率單獨向本案收取，<strong>不影響其他案的分攤</strong>。</>}
+          </div>
+          {fixedByMonth.length > 0 && (
+            <div className="fixed-by-month">
+              <button type="button" className="link-btn-inline" onClick={() => setFixedDetailOpen(o => !o)}>
+                {fixedDetailOpen ? '▾ 收起逐月明細' : '▸ 這個數字怎麼來的（逐月明細）'}
+              </button>
+              {fixedDetailOpen && (
+                <div className="fbm-list">
+                  {fixedByMonth.map(r => (
+                    <div key={r.key} className={`fbm-row ${r.others.length === 0 ? 'alone' : ''}`}>
+                      <span className="fbm-month">{r.label}</span>
+                      <span className="fbm-days">{r.days} / {r.daysInMonth} 天</span>
+                      <span className="fbm-others">{r.others.length === 0 ? '當月只有這一案 → 扛整個月' : `同月：${r.others.map(o => `${o.title} ${o.days} 天`).join('、')}`}</span>
+                      <span className="fbm-amt">{fmtNT(Math.round(r.amount))}</span>
+                    </div>
+                  ))}
+                  <div className="fbm-row total">
+                    <span className="fbm-month">合計</span><span></span><span></span>
+                    <span className="fbm-amt">{fmtNT(Math.round(fixedByMonth.reduce((a, r) => a + r.amount, 0)))}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Tax */}
+        <div className="cost-block">
+          <div className="cost-block-h"><span>稅務</span></div>
+          <div className="cost-row-line">
+            <span>案件類型</span>
+            <div className="type-toggle">
+              <button className={!project.overseas ? 'on' : ''} onClick={() => update({ overseas: false })}>國內案</button>
+              <button className={project.overseas ? 'on' : ''} onClick={() => update({ overseas: true })}>國外案</button>
+            </div>
+          </div>
+          {c.isOverseas ? (
+            <>
+              <div className="cost-row-line emphasis"><span>應繳營業稅</span><span className="num-val">{fmtNT(0)}</span></div>
+              <div className="tax-hint">境外交易依加值型及非加值型營業稅法規定，於一定金額內免徵營業稅。</div>
+            </>
+          ) : (
+            <>
+              <div className="cost-row-line"><span>銷項稅（含稅價拆算）</span><span className="num-val">{fmtNT(c.salesVAT)}</span></div>
+              <div className="cost-row-line"><span>可抵扣進項稅</span><span className="num-val">− {fmtNT(c.creditableInputTax)}</span></div>
+              <div className="cost-row-line emphasis"><span>應繳營業稅</span><span className="num-val">{fmtNT(c.netVAT)}</span></div>
+              <div className="tax-hint">合約金額為含稅價，稅額 = 含稅價 ÷ 1.05 × 5%。公司外包可抵進項稅，個人外包無發票不可抵。<br/>此處顯示單案估算，<strong>公司實際繳稅</strong>會跨案合併（同期銷項減進項，含跨期留底結轉），以現金流量表為準。</div>
+            </>
+          )}
+        </div>
+      </div>
+
+      <PaymentSchedule project={project} onUpdate={onUpdate} />
+
+      <div className="cost-section">
+        <div className="cost-section-h">
+          <div className="cost-block-h">
+            <span>外包支出</span>
+            <span className="ghost-pill">公司 {fmtNT(c.companyOutsource)}</span>
+            <span className="ghost-pill">個人 {fmtNT(c.personalOutsource)}</span>
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {onUpdateCustomOutsourceRoles && <button className="btn btn-ghost small" onClick={addCustomRole}>+ 新增角色</button>}
+            <button className="btn btn-ghost small" onClick={addOutsource}>+ 新增外包項目</button>
+          </div>
+        </div>
+        <div className="outsource-list">
+          <div className="outsource-row head">
+            <div>角色 / 項目</div><div>類型</div><div>金額</div><div className="center">可抵稅</div><div></div>
+          </div>
+          {(project.outsources || []).length === 0 && <div className="empty-row">尚無外包支出。點上方按鈕新增。</div>}
+          {(project.outsources || []).map(o => {
+            const rolesList = outsourceRoles || DEFAULT_OUTSOURCE_ROLES;
+            const showOrphan = o.name && !rolesList.includes(o.name);
+            const customs = customOutsourceRoles || [];
+            return (
+              <div key={o.id} className="outsource-row">
+                <select className="input select" value={o.name || ''} onChange={e => updateOutsource(o.id, { name: e.target.value })}>
+                  <option value="" disabled>選擇角色…</option>
+                  {showOrphan && <option value={o.name}>{o.name}</option>}
+                  {customs.length > 0 ? (
+                    <>
+                      <optgroup label="預設">{DEFAULT_OUTSOURCE_ROLES.map(r => <option key={r} value={r}>{r}</option>)}</optgroup>
+                      <optgroup label="自訂">{customs.map(r => <option key={r} value={r}>{r}</option>)}</optgroup>
+                    </>
+                  ) : DEFAULT_OUTSOURCE_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                </select>
+                <div className="type-toggle">
+                  <button className={o.type === 'company' ? 'on' : ''} onClick={() => updateOutsource(o.id, { type: 'company', taxable: true })}>公司</button>
+                  <button className={o.type === 'personal' ? 'on' : ''} onClick={() => updateOutsource(o.id, { type: 'personal', taxable: false })}>個人</button>
+                </div>
+                <MoneyInput value={o.amount} onChange={v => updateOutsource(o.id, { amount: v })} />
+                <div className="center">
+                  <div className={`check-box ${o.taxable ? 'checked' : ''} ${o.type === 'personal' ? 'disabled' : ''}`}
+                    onClick={() => { if (o.type === 'company') updateOutsource(o.id, { taxable: !o.taxable }); }}
+                    title={o.type === 'personal' ? '個人外包無法抵稅' : '可抵扣 5% 進項稅'}></div>
+                </div>
+                <button className="delete-item visible" onClick={() => { if (confirm('確定刪除這筆外包？')) removeOutsource(o.id); }} title="刪除">×</button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProjectFinanceModal({ project, onClose, ...detailProps }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  if (!project) return null;
+  return ReactDOM.createPortal(
+    <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modal modal-wide finance-modal">
+        <button className="modal-close" onClick={onClose} title="關閉 (Esc)">×</button>
+        <ProjectFinanceDetail project={project} {...detailProps} />
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 // ---------- Project Card ----------
-function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycleStage, onCloseDetail, onUpdateStage, onDeleteStage, onInsertStage, onUpdateProject, onTogglePanel, onDeleteProject, onArchive, onRestore, onPurgeProject, density, stageVariant, dragHandleProps, dropTargetProps, isDragging, isOver, panelStyle, fixedCostShare, overtimeShare, monthlyFixedExpense, onOpenCashSettings, outsourceRoles, customOutsourceRoles, onUpdateCustomOutsourceRoles, isFocused, anyFocused }) {
+function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycleStage, onCloseDetail, onUpdateStage, onDeleteStage, onInsertStage, onUpdateProject, onTogglePanel, onDeleteProject, onArchive, archiveMode = 'deliver', onRestore, onPurgeProject, density, stageVariant, dragHandleProps, dropTargetProps, isDragging, isOver, panelStyle, fixedCostShare, overtimeShare, monthlyFixedExpense, onOpenCashSettings, outsourceRoles, customOutsourceRoles, onUpdateCustomOutsourceRoles, isFocused, anyFocused, onOpenFullFinance, presentation }) {
   const origDue = new Date(project.due);
   const isExtended = !!project.extendedDue && new Date(project.extendedDue) > origDue;
   const effDue = isExtended ? new Date(project.extendedDue) : origDue;
@@ -3019,15 +3712,42 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
   const extDays = isExtended ? daysBetween(origDue, new Date(project.extendedDue)) : 0;
 
   const [showEditModal, setShowEditModal] = useState(false);
+  const cardRef = useRef(null);
+  const heroRef = useRef(null);      // 卡片頭部（標題＋倒數＋進度條）＝劇照的框，面板展開不會改變它
+  const stageRowRef = useRef(null);
+  const [coverFrame, setCoverFrame] = useState(null);
+  const openEdit = () => {
+    const el = heroRef.current || cardRef.current;
+    if (el) setCoverFrame({ w: el.offsetWidth, h: el.offsetHeight });
+    setShowEditModal(true);
+  };
+  const panelOpen = !!expandedStageId || !!project.infoOpen || !!project.costsOpen;
+  // 面板打開時頭部要黏在畫面上方、只露出進度條那一列：需要知道頭部與進度條列的高度
+  useEffect(() => {
+    if (!panelOpen) return;
+    const card = cardRef.current, hero = heroRef.current, row = stageRowRef.current;
+    if (!card || !hero || !row || typeof ResizeObserver === 'undefined') return;
+    const apply = () => {
+      card.style.setProperty('--hero-h', hero.offsetHeight + 'px');
+      card.style.setProperty('--stage-h', row.offsetHeight + 'px');
+    };
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(hero); ro.observe(row);
+    return () => ro.disconnect();
+  }, [panelOpen]);
 
   // 用全域的 projectPct（會處理子細項 + 階段等權重平均）。
   const pct = projectPct(project);
-  const canArchive = pct === 100;
+  // 「完成」= 進度 100%，或已經按過「已交件」（歸檔）。歸檔的案子就算細項沒全勾，也要以交件狀態顯示
+  const canArchive = pct === 100 || !!project.archived;
   // 超常發揮：完成日早於「原定」交件日才算提前（延期後才趕上不算，對自己誠實）
   const earlyDays = (canArchive && project.completedAt && !isNaN(origDue))
     ? daysBetween(new Date(project.completedAt), origDue) : 0;
   const cardColor = colorById(project.color);
   const [metaOpen, setMetaOpen] = useState(false);
+  const billing = getBillingStatus(project);
+  const coverUrl = useCoverUrl(project.coverPath);
 
   // current stage = first 'active', else last 'done', else first
   const currentStage = project.stages.find(s => s.status === 'active')
@@ -3036,7 +3756,8 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
 
   return (
     <div
-      className={`card ${density === 'dense' ? 'dense' : ''} ${isDragging ? 'dragging' : ''} ${isOver ? 'drag-over' : ''} ${canArchive ? 'celebrate' : ''} ${isFocused ? 'focused' : ''} ${anyFocused && !isFocused ? 'dimmed' : ''} ${cardColor.hex ? 'has-color' : ''} ${metaOpen ? 'meta-open' : ''}`}
+      className={`card ${density === 'dense' ? 'dense' : ''} ${isDragging ? 'dragging' : ''} ${isOver ? 'drag-over' : ''} ${canArchive ? 'celebrate' : ''} ${isFocused ? 'focused' : ''} ${anyFocused && !isFocused ? 'dimmed' : ''} ${cardColor.hex ? 'has-color' : ''} ${metaOpen ? 'meta-open' : ''} ${coverUrl ? 'has-cover' : ''} ${panelOpen ? 'panel-open' : ''}`}
+      ref={cardRef}
       data-screen-label={project.title}
       data-project-id={project.id}
       style={cardColor.hex ? { '--card-color': cardColor.hex } : undefined}
@@ -3056,12 +3777,19 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
         ) : (
           <>
             {canArchive && (
-              <button className="card-action archive-cta" onClick={() => onArchive(project.id)} title="專案已完成，移到已歸檔">
-                <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2 3.5h10v2H2zM3 6v5h8V6M5.5 8h3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                歸檔
-              </button>
+              archiveMode === 'restore' ? (
+                <button className="card-action" onClick={() => onArchive(project.id)} title="移回進行中">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 7a4 4 0 1 1 1.2 2.8M3 5v2h2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  恢復進行中
+                </button>
+              ) : (
+                <button className="card-action archive-cta" onClick={() => onArchive(project.id)} title="製作結束、已交給客戶。卡片會離開主畫面；款項未收齊的話，仍會留在「收付款」頁追蹤">
+                  <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2 3.5h10v2H2zM3 6v5h8V6M5.5 8h3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  已交件
+                </button>
+              )
             )}
-            <button className="card-action" onClick={() => setShowEditModal(true)} title="編輯專案基本資料">
+            <button className="card-action" onClick={openEdit} title="編輯專案基本資料">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M10.5 2.5l1 1-7 7H3v-1.5l7-7z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
             </button>
             <button className={`card-action ${project.infoOpen ? 'on' : ''}`} onClick={() => onTogglePanel(project.id, 'info')} title="專案資訊">
@@ -3076,14 +3804,16 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
           </>
         )}
       </div>
+      <span className="card-rim" aria-hidden="true" />
+      <div className="card-hero" ref={heroRef}>
+      {coverUrl && (
+        <div className="card-cover" aria-hidden="true"
+          style={{ backgroundImage: `url("${coverUrl}")`, '--cx': `${Number(project.coverX) || 0}%`, '--cy': `${Number(project.coverY) || 0}%`, '--cover-zoom': Number(project.coverZoom) || 1 }} />
+      )}
       <div className="card-row">
-        <div className="drag-handle" title="拖曳排序" {...dragHandleProps}></div>
-
-        <div className="stage-tag">{currentStage.label}</div>
-
-        <div className="card-center">
+        <div className="card-title-block">
           <div className="project-title">{project.title}</div>
-          <div className="client-name centered">{project.client}</div>
+          <div className="client-name">{project.client}</div>
         </div>
 
         <div className="card-right">
@@ -3094,12 +3824,15 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
                   <span className="done-check">✓</span><span className="unit">已完成</span>
                 </div>
                 <div className="countdown-label">
-                  <span className="due-date">{fmtDate(effDue)}</span>
+                  <span className="due-date">{fmtDate(project.deliveredAt ? new Date(project.deliveredAt) : effDue)}</span>
                   <span className="due-sep">·</span>
-                  <span>交件</span>
+                  <span>{project.deliveredAt ? '已交件' : '交件'}</span>
                 </div>
                 {earlyDays > 0 && (
                   <div className="early-note">提前 {earlyDays} 天完成</div>
+                )}
+                {billing !== 'full' && (
+                  <div className="billing-note">待收 {fmtNT((Number(project.budget) || 0) - getReceivedAmount(project))}</div>
                 )}
               </>
             ) : (
@@ -3167,14 +3900,22 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
         )}
       </div>
 
-      <StageBar
-        variant={stageVariant}
-        stages={project.stages}
-        selectedStageId={expandedStageId}
-        onClick={(sid) => onStageClick(sid)}
-        onCycle={(sid) => onCycleStage(project.id, sid)}
-        onInsert={(idx) => onInsertStage(project.id, idx)}
-      />
+      <div className="card-stage-row" ref={stageRowRef}>
+        <div className="stage-lead">
+          <div className="drag-handle" title="拖曳排序" {...dragHandleProps}></div>
+          <div className="stage-tag">{currentStage.label}</div>
+          {hasWorkPeriods(project) && <span className="seg-badge" title="這案子中間有停工：固定成本只算實際工作區間（編輯專案可改）">分段</span>}
+        </div>
+        <StageBar
+          variant={stageVariant}
+          stages={project.stages}
+          selectedStageId={expandedStageId}
+          onClick={(sid) => onStageClick(sid)}
+          onCycle={(sid) => onCycleStage(project.id, sid)}
+          onInsert={(idx) => onInsertStage(project.id, idx)}
+        />
+      </div>
+      </div>{/* /card-hero */}
 
       {expandedStageId && panelStyle === 'inline' && (
         <StageDetail
@@ -3194,6 +3935,8 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
         <CostPanel
           project={project}
           onUpdate={(p) => onUpdateProject(project.id, p)}
+          onOpenFullFinance={onOpenFullFinance}
+          presentation={presentation}
           fixedCostShare={fixedCostShare}
           overtimeShare={overtimeShare}
           monthlyFixedExpense={monthlyFixedExpense}
@@ -3207,6 +3950,7 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
       {showEditModal && (
         <EditProjectModal
           project={project}
+          coverFrame={coverFrame}
           onClose={() => setShowEditModal(false)}
           onSave={(patch) => { onUpdateProject(project.id, patch); setShowEditModal(false); }}
         />
@@ -3228,7 +3972,64 @@ const PROJECT_COLORS = [
 ];
 const colorById = (id) => PROJECT_COLORS.find(c => c.id === id) || PROJECT_COLORS[0];
 
-function EditProjectModal({ project, onClose, onSave }) {
+// 劇照取景：像 Facebook 封面——拖曳移動、滑桿縮放。存的是 translate %（x/y）和 zoom，
+// 卡片用同一組 CSS 變數畫，所以預覽框＝卡片實際看到的範圍（框的長寬比對齊收合狀態的卡片）。
+function CoverCropEditor({ url, x, y, zoom, onChange, frame }) {
+  // frame = 打開視窗那一刻量到的卡片尺寸 → 預覽框用同樣的長寬比，看到的範圍才會一樣
+  const aspect = (frame && frame.w > 0 && frame.h > 0) ? (frame.w / frame.h) : (1120 / 236);
+  const boxRef = useRef(null);
+  const [nat, setNat] = useState(null);      // 圖片原始尺寸，用來限制不能拖出邊界
+  const drag = useRef(null);
+  useEffect(() => {
+    let alive = true; const img = new Image();
+    img.onload = () => { if (alive) setNat({ w: img.naturalWidth, h: img.naturalHeight }); };
+    img.src = url;
+    return () => { alive = false; };
+  }, [url]);
+  // 允許的最大位移（%）：cover 縮放後多出來的部分的一半
+  const limits = (z) => {
+    const box = boxRef.current; if (!box || !nat) return { mx: 100, my: 100 };
+    const W = box.clientWidth, H = box.clientHeight;
+    const s = Math.max(W / nat.w, H / nat.h);
+    const rw = nat.w * s * z, rh = nat.h * s * z;
+    return { mx: Math.max(0, (rw - W) / 2) / W * 100, my: Math.max(0, (rh - H) / 2) / H * 100 };
+  };
+  const clamp = (v, m) => Math.max(-m, Math.min(m, v));
+  const onPointerDown = (e) => {
+    e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId);
+    drag.current = { sx: e.clientX, sy: e.clientY, x0: x, y0: y };
+  };
+  const onPointerMove = (e) => {
+    if (!drag.current) return;
+    const box = boxRef.current; if (!box) return;
+    const { mx, my } = limits(zoom);
+    const nx = clamp(drag.current.x0 + (e.clientX - drag.current.sx) / box.clientWidth * 100, mx);
+    const ny = clamp(drag.current.y0 + (e.clientY - drag.current.sy) / box.clientHeight * 100, my);
+    onChange({ coverX: Math.round(nx * 10) / 10, coverY: Math.round(ny * 10) / 10 });
+  };
+  const onPointerUp = () => { drag.current = null; };
+  const setZoom = (z) => {
+    const { mx, my } = limits(z);
+    onChange({ coverZoom: z, coverX: clamp(x, mx), coverY: clamp(y, my) });
+  };
+  return (
+    <div className="cover-crop">
+      <div ref={boxRef} className="cover-crop-box" style={{ aspectRatio: String(aspect) }} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
+        title="拖曳移動取景位置">
+        <div className="cover-crop-img" style={{ backgroundImage: `url("${url}")`, '--cx': `${x}%`, '--cy': `${y}%`, '--cover-zoom': zoom }} />
+        <div className="cover-crop-hint">拖曳移動</div>
+      </div>
+      <div className="cover-crop-tools">
+        <span className="cover-crop-label">縮放</span>
+        <input type="range" min="1" max="3" step="0.05" value={zoom} onChange={e => setZoom(Number(e.target.value))} />
+        <span className="cover-crop-zoom">{zoom.toFixed(2)}×</span>
+        <button type="button" className="btn btn-ghost small" onClick={() => onChange({ coverX: 0, coverY: 0, coverZoom: 1 })}>重設</button>
+      </div>
+    </div>
+  );
+}
+
+function EditProjectModal({ project, onClose, onSave, coverFrame }) {
   const [form, setForm] = useState({
     title: project.title || '',
     client: project.client || '',
@@ -3238,13 +4039,47 @@ function EditProjectModal({ project, onClose, onSave }) {
     extendedDue: project.extendedDue || '',
     completedAt: project.completedAt || '',
     color: project.color || 'none',
+    coverPath: project.coverPath || '',
+    coverX: Number(project.coverX) || 0,
+    coverY: Number(project.coverY) || 0,
+    coverZoom: Number(project.coverZoom) || 1,
+    workPeriods: Array.isArray(project.workPeriods) ? project.workPeriods.map(w => ({ start: w.start || '', end: w.end || '' })) : [],
   });
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef(null);
+  const coverPreviewUrl = useCoverUrl(form.coverPath);
+  // 「中間有停工」開關：打開時預設一段（起始→留空＝到交件日）
+  const segmented = form.workPeriods.length > 0;
+  const setSegmented = (on) => setForm(f => ({ ...f, workPeriods: on ? (f.workPeriods.length ? f.workPeriods : [{ start: f.start || '', end: '' }]) : [] }));
+  const setPeriod = (i, patch) => setForm(f => ({ ...f, workPeriods: f.workPeriods.map((w, j) => j === i ? { ...w, ...patch } : w) }));
+  const addPeriod = () => setForm(f => ({ ...f, workPeriods: [...f.workPeriods, { start: '', end: '' }] }));
+  const removePeriod = (i) => setForm(f => ({ ...f, workPeriods: f.workPeriods.filter((_, j) => j !== i) }));
+
+  const onPickCover = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (!/^image\//.test(file.type)) { alert('請選圖片檔（JPG / PNG / HEIC 轉 JPG 後）。'); return; }
+    setUploading(true);
+    try {
+      const path = await uploadCoverImage(project.id, file);
+      setForm(f => {
+        if (f.coverPath && f.coverPath !== project.coverPath) deleteCoverImage(f.coverPath); // 這次視窗裡傳過、還沒存的舊圖
+        return { ...f, coverPath: path, coverX: 0, coverY: 0, coverZoom: 1 };
+      });
+    } catch (err) {
+      alert('劇照上傳失敗：' + (err && err.message ? err.message : err) + '\n\n如果是第一次用，請先到 Supabase 後台建立 "' + COVER_BUCKET + '" 這個 bucket。');
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  };
 
   const valid = form.title.trim() && form.client.trim() && form.budget && form.due;
 
   const submit = (e) => {
     e.preventDefault();
     if (!valid) return;
+    if (project.coverPath && project.coverPath !== form.coverPath) deleteCoverImage(project.coverPath);
     onSave({
       title: form.title.trim(),
       client: form.client.trim(),
@@ -3254,12 +4089,18 @@ function EditProjectModal({ project, onClose, onSave }) {
       extendedDue: form.extendedDue || '',
       completedAt: form.completedAt || '',
       color: form.color,
+      coverPath: form.coverPath || '',
+      coverX: form.coverX || 0,
+      coverY: form.coverY || 0,
+      coverZoom: form.coverZoom || 1,
+      workPeriods: form.workPeriods.filter(w => w.start).map(w => ({ start: w.start, end: w.end || '' })),
     });
   };
 
-  return (
+  // 用 portal 掛到 body：卡片有 backdrop-filter，會把 position:fixed 的子元素困在卡片框內
+  return ReactDOM.createPortal(
     <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal">
+      <div className="modal edit-project">
         <h2>編輯專案資訊</h2>
         <div className="modal-sub">修改後按「儲存」即可更新</div>
         <form className="modal-form" onSubmit={submit}>
@@ -3309,6 +4150,50 @@ function EditProjectModal({ project, onClose, onSave }) {
             </div>
           </div>
           <div className="field">
+            <label className="field-label">實際工作區間（選填）</label>
+            <label className="toggle-row">
+              <input type="checkbox" checked={segmented} onChange={e => setSegmented(e.target.checked)} />
+              <span>這個案子中間有停工——固定成本只算實際工作的日子</span>
+            </label>
+            {segmented && (
+              <div className="period-list">
+                {form.workPeriods.map((w, i) => (
+                  <div key={i} className="period-row">
+                    <span className="period-idx">第 {i + 1} 段</span>
+                    <input type="date" className="date-input compact" value={w.start} onChange={e => setPeriod(i, { start: e.target.value })} />
+                    <span className="period-arrow">→</span>
+                    <input type="date" className="date-input compact" value={w.end} min={w.start || undefined} onChange={e => setPeriod(i, { end: e.target.value })} />
+                    <span className="period-hint">{w.end ? '' : '留空＝做到交件日'}</span>
+                    <button type="button" className="delete-item visible" onClick={() => removePeriod(i)} title="刪除這段" disabled={form.workPeriods.length <= 1}>×</button>
+                  </div>
+                ))}
+                <button type="button" className="btn btn-ghost small" onClick={addPeriod}>+ 再加一段</button>
+                <div className="field-hint">其他案子照原本算法；只有這個案子會依這些區間分攤每月固定支出。停工期間的月租由當時在跑的其他案子分攤。有填的話「延期佔用費」不再另計。</div>
+              </div>
+            )}
+          </div>
+          <div className="field">
+            <label className="field-label">專案劇照（選填）</label>
+            <div className={`cover-field ${form.coverPath ? 'has-img' : ''}`}>
+              {form.coverPath
+                ? (coverPreviewUrl
+                    ? <CoverCropEditor url={coverPreviewUrl} x={form.coverX} y={form.coverY} zoom={form.coverZoom} frame={coverFrame}
+                        onChange={(v) => setForm(f => ({ ...f, ...v }))} />
+                    : <div className="cover-preview empty">載入中…</div>)
+                : <div className="cover-preview empty">尚未上傳</div>}
+              <div className="cover-actions">
+                <button type="button" className="btn btn-ghost small" disabled={uploading} onClick={() => fileRef.current && fileRef.current.click()}>
+                  {uploading ? '上傳中…' : (form.coverPath ? '更換圖片' : '選擇圖片')}
+                </button>
+                {form.coverPath && !uploading && (
+                  <button type="button" className="btn btn-ghost small" onClick={() => setForm(f => ({ ...f, coverPath: '' }))}>移除</button>
+                )}
+                <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={onPickCover} />
+              </div>
+            </div>
+            <div className="field-hint">上方預覽就是卡片的取景框：<strong>拖曳移動、下方滑桿縮放</strong>，把重點擺在你要的位置。圖片存在私有空間，只有登入後看得到。</div>
+          </div>
+          <div className="field">
             <label className="field-label">卡片色彩</label>
             <div className="color-swatches">
               {PROJECT_COLORS.map(c => (
@@ -3326,12 +4211,13 @@ function EditProjectModal({ project, onClose, onSave }) {
             </div>
           </div>
           <div className="modal-actions">
-            <button type="button" className="btn btn-ghost" onClick={onClose}>取消 (Esc)</button>
+            <button type="button" className="btn btn-ghost" onClick={() => { if (form.coverPath && form.coverPath !== project.coverPath) deleteCoverImage(form.coverPath); onClose(); }}>取消 (Esc)</button>
             <button type="submit" className="btn btn-primary" disabled={!valid}>儲存</button>
           </div>
         </form>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -3567,7 +4453,8 @@ function CashflowChart({ series, viewMode = 'overview' }) {
     };
 
     const dotColor = (kind) => {
-      if (kind === 'income') return '#10b981';
+      if (kind === 'income-received') return '#10b981'; // 已收：實心綠
+      if (kind === 'income') return '#6ee7b7';          // 未收：淡綠（預估）
       if (kind === 'fixed') return '#ef4444';
       if (kind === 'outsource') return '#fbbf24'; // 未付：淡橙黃（預估）
       if (kind === 'outsource-paid') return '#f59e0b'; // 已付：實心橙
@@ -3823,6 +4710,31 @@ function CashflowLegend() {
   );
 }
 
+// 「還能撐多久」：從今天到餘額第一次轉負的那天。>6 個月藍、3–6 個月紫、<3 個月紅。
+function RunwayBanner({ series }) {
+  if (!series) return null;
+  const today = new Date(TODAY);
+  let days = null;
+  if (series.goesNegative && series.negativeAt) days = daysBetween(today, new Date(series.negativeAt.date));
+  const months = days == null ? null : days / 30.44;
+  const tone = days == null ? 'blue' : days < 0 ? 'red' : months < 3 ? 'red' : months <= 6 ? 'purple' : 'blue';
+  let big, sub;
+  if (days == null) { big = '12 個月內不見底'; sub = `以今天（${fmtDate(today)}）起算，未來 12 個月餘額都在零以上`; }
+  else if (days < 0) { big = '已經見底'; sub = `餘額在 ${fmtDate(new Date(series.negativeAt.date))} 已轉負`; }
+  else {
+    const m = Math.floor(months), d = Math.round(days - m * 30.44);
+    big = m >= 1 ? `還剩 ${m} 個月${d > 0 ? ` ${d} 天` : ''}` : `還剩 ${days} 天`;
+    sub = `以今天（${fmtDate(today)}）起算，${fmtDate(new Date(series.negativeAt.date))} 見底`;
+  }
+  return (
+    <div className={`runway tone-${tone}`}>
+      <div className="runway-label">資金還能撐</div>
+      <div className="runway-big">{big}</div>
+      <div className="runway-sub">{sub}</div>
+    </div>
+  );
+}
+
 function CashflowPanel({ series, hasSettings, onOpenSettings, defaultOpen = false }) {
   const [open, setOpen] = useState(defaultOpen);
   const [viewMode, setViewMode] = useState('overview');  // overview / income / expense
@@ -3869,6 +4781,7 @@ function CashflowPanel({ series, hasSettings, onOpenSettings, defaultOpen = fals
             </div>
           ) : (
             <>
+              <RunwayBanner series={series} />
               <div className="cashflow-tabs">
                 <button className={viewMode === 'overview' ? 'on' : ''} onClick={() => setViewMode('overview')}>總覽</button>
                 <button className={viewMode === 'income' ? 'on' : ''} onClick={() => setViewMode('income')}>收入</button>
@@ -3891,7 +4804,7 @@ function Sidebar({ currentPage, onChange, counts }) {
   const items = [
     { id: 'projects', label: '專案',   count: counts.projects },
     { id: 'finance',  label: '財務',   count: null },
-    { id: 'payments', label: '付款',   count: counts.unpaidOutsources },
+    { id: 'payments', label: '收付款', count: counts.unpaidOutsources },
     { id: 'calendar', label: '行事曆', count: null },
   ];
   return (
@@ -4767,8 +5680,8 @@ function GanttStageBar({ project, stage, color, dayOffset, onResize }) {
 }
 
 // ---------- Finance page (cash flow + cross-project summary) ----------
-function FixedCostBreakdownSection({ projects, monthlyFixed }) {
-  const [open, setOpen] = useState(false);
+function FixedCostBreakdownSection({ projects, monthlyFixed, defaultOpen = false }) {
+  const [open, setOpen] = useState(!!defaultOpen);
   const breakdown = useMemo(
     () => computeMonthlyFixedBreakdown(projects, monthlyFixed),
     [projects, monthlyFixed]
@@ -4918,7 +5831,187 @@ function computeTodayBalance(projects, settings) {
   return balance;
 }
 
+// ===== 收款（客戶那邊的錢）=====
+function buildReceivableRows(projects) {
+  var today = new Date(TODAY); today.setHours(0, 0, 0, 0);
+  var nextMonthStart = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+  var monthAfterStart = new Date(today.getFullYear(), today.getMonth() + 2, 1);
+  var rows = [];
+  (projects || []).forEach(function(p) {
+    if (p.deleted) return;
+    var budget = Number(p.budget) || 0;
+    getPayments(p).forEach(function(pay) {
+      var amount = budget * (Number(pay.percentage) || 0) / 100;
+      if (amount === 0) return;
+      var received = isPaymentReceived(pay);
+      var dateObj = pay.dueDate ? new Date(pay.dueDate) : null;
+      if (dateObj) dateObj.setHours(0, 0, 0, 0);
+      var bucket, daysOverdue = 0;
+      if (received) bucket = 'paid';
+      else if (!dateObj || isNaN(dateObj)) bucket = 'undated';
+      else if (dateObj < today) { bucket = 'overdue'; daysOverdue = daysBetween(dateObj, today); }
+      else if (dateObj < nextMonthStart) bucket = 'thisMonth';
+      else if (dateObj < monthAfterStart) bucket = 'nextMonth';
+      else bucket = 'future';
+      rows.push({
+        projectId: p.id, paymentId: pay.id, projectTitle: p.title, client: p.client,
+        label: pay.label, amount: amount, dueDate: pay.dueDate || '',
+        received: received, receivedDate: pay.receivedDate || '',
+        bucket: bucket, daysOverdue: daysOverdue, archived: !!p.archived,
+      });
+    });
+  });
+  return rows;
+}
+
+function ReceivablesView({ projects, settings, onUpdateProject }) {
+  var todayBalance = useMemo(function() { return computeTodayBalance(projects, settings); }, [projects, settings]);
+  var allRows = useMemo(function() { return buildReceivableRows(projects); }, [projects]);
+  var groups = useMemo(function() {
+    var g = { overdue: [], thisMonth: [], nextMonth: [], future: [], undated: [], paid: [] };
+    allRows.forEach(function(r) { g[r.bucket].push(r); });
+    ['overdue', 'thisMonth', 'nextMonth', 'future'].forEach(function(k) {
+      g[k].sort(function(a, b) { return (a.dueDate || '').localeCompare(b.dueDate || ''); });
+    });
+    g.paid.sort(function(a, b) { return (b.receivedDate || '').localeCompare(a.receivedDate || ''); });
+    return g;
+  }, [allRows]);
+
+  var setRowReceived = function(r, received, date) {
+    var project = projects.find(function(p) { return p.id === r.projectId; });
+    if (!project) return;
+    var next = getPayments(project).map(function(pay) {
+      if (pay.id !== r.paymentId) return pay;
+      return Object.assign({}, pay, {
+        received: received,
+        receivedDate: received ? (date || pay.receivedDate || defaultActualDate(pay.dueDate)) : null,
+      });
+    });
+    onUpdateProject(r.projectId, { payments: next });
+  };
+
+  var thisMonthKey = toISODate(TODAY).slice(0, 7);
+  var sumOf = function(list) { return list.reduce(function(a, r) { return a + r.amount; }, 0); };
+  var monthDueRows = allRows.filter(function(r) { return (r.dueDate || '').slice(0, 7) === thisMonthKey; });
+  var monthReceived = sumOf(allRows.filter(function(r) { return r.received && (r.receivedDate || '').slice(0, 7) === thisMonthKey; }));
+  var monthPending = sumOf(monthDueRows.filter(function(r) { return !r.received; }));
+  var overdueAmt = sumOf(groups.overdue);
+
+  if (allRows.length === 0) {
+    return (
+      <div className="payments-empty">
+        <h3>還沒有收款排程</h3>
+        <p className="muted">專案建立後會自動有頭期款／尾款，可在專案的「$」面板調整。</p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="pay-balance-bar">
+        <div className="pay-balance-left">
+          <span className="pay-balance-label">目前現金餘額</span>
+          <span className={'pay-balance-value' + (todayBalance != null && todayBalance < 0 ? ' negative' : '')}>
+            {todayBalance != null ? fmtNT(Math.round(todayBalance)) : '—'}
+          </span>
+          <span className="pay-balance-hint">已實現（只算真的收到、真的付出的）</span>
+        </div>
+      </div>
+      <div className="pay-overview">
+        <PayStat label="本月應收" value={sumOf(monthDueRows)} />
+        <PayStat label="本月已收" value={monthReceived} accent="done" />
+        <PayStat label="本月待收" value={monthPending} accent={monthPending > 0 ? 'active' : 'muted'} />
+        {overdueAmt > 0 && <PayStat label="逾期未收" value={overdueAmt} accent="danger" warn={true} />}
+      </div>
+
+      <ReceivableGroup title="逾期未收" rows={groups.overdue} emptyHide={true} accent="danger" showDays={true} onSet={setRowReceived} />
+      <ReceivableGroup title="本月待收" rows={groups.thisMonth} emptyHide={false} accent="active" onSet={setRowReceived} />
+      <ReceivableGroup title="下月待收" rows={groups.nextMonth} emptyHide={true} accent="muted" onSet={setRowReceived} />
+      <ReceivableGroup title="未來待收" rows={groups.future} emptyHide={true} accent="muted" onSet={setRowReceived} />
+      {groups.undated.length > 0 && (
+        <ReceivableGroup title="未排程（缺收款日）" rows={groups.undated} emptyHide={false} accent="muted" onSet={setRowReceived} />
+      )}
+      <ReceivableGroup title="已收" rows={groups.paid} emptyHide={true} accent="done" defaultCollapsed={true} onSet={setRowReceived} />
+    </>
+  );
+}
+
+function ReceivableGroup({ title, rows, emptyHide, accent, showDays, defaultCollapsed, onSet }) {
+  var [collapsed, setCollapsed] = useState(!!defaultCollapsed);
+  if (emptyHide && rows.length === 0) return null;
+  var total = rows.reduce(function(s, r) { return s + r.amount; }, 0);
+  return (
+    <div className={'pay-group pay-group-' + (accent || 'muted')}>
+      <button className="pay-group-header" onClick={() => setCollapsed(c => !c)} type="button">
+        <span className="chevron">{collapsed ? '▸' : '▾'}</span>
+        <span className="pay-group-title">{title}</span>
+        <span className="pay-group-meta">{rows.length} 筆 · {fmtNT(total)}</span>
+      </button>
+      {!collapsed && (
+        <div className="pay-group-body">
+          {rows.length === 0 ? (
+            <div className="pay-empty">無</div>
+          ) : rows.map(function(r) {
+            return (
+              <div key={r.projectId + '_' + r.paymentId} className={'pay-row' + (r.received ? ' pay-row-paid' : '')}>
+                {r.received
+                  ? <span className="pay-paid-marker" title="已收到">✓</span>
+                  : <button className="pay-receive-btn" type="button" onClick={() => onSet(r, true)} title="錢進來了，標記為已收（入帳日預設今天，可改）">收到了</button>}
+                <div className="pay-row-main">
+                  <div className="pay-row-name">
+                    <span className="pay-outsource-name">{r.label}</span>
+                    <span className="pay-project-name">{r.projectTitle} · {r.client}{r.archived ? '（已交件）' : ''}</span>
+                  </div>
+                  <div className="pay-row-meta">
+                    <span className="pay-amount">{fmtNT(r.amount)}</span>
+                    {r.received ? (
+                      <span className="pay-date received-inline">
+                        入帳
+                        <input type="date" className="date-input compact" value={r.receivedDate}
+                          onChange={e => onSet(r, true, e.target.value)} title="實際入帳日" />
+                      </span>
+                    ) : (
+                      <span className="pay-date">{r.dueDate ? '預計 ' + r.dueDate : '無預計日'}</span>
+                    )}
+                    {showDays && r.daysOverdue > 0 && <span className="pay-overdue">逾期 {r.daysOverdue} 天</span>}
+                    {r.received && (
+                      <button className="pay-undo-btn" type="button" title="撤銷已收狀態"
+                        onClick={() => { if (confirm('撤銷「' + r.projectTitle + ' · ' + r.label + '」的已收狀態？')) onSet(r, false); }}>↺</button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ===== 收付款頁：收款（錢進來）／付款（錢出去）兩個分頁 =====
 function PaymentsPage({ projects, settings, onUpdateProject, onBatchUpdateProjects }) {
+  var [mode, setMode] = useState('receive'); // 'receive' | 'pay'
+  var overdueRecv = useMemo(function() { return buildReceivableRows(projects).filter(function(r) { return r.bucket === 'overdue'; }).length; }, [projects]);
+  var unpaidOut = useMemo(function() { return buildPaymentRows(projects).filter(function(r) { return !r.paid; }).length; }, [projects]);
+  return (
+    <section className="payments-page">
+      <div className="subnav">
+        <button className={'subnav-item' + (mode === 'receive' ? ' on' : '')} onClick={() => setMode('receive')} type="button">
+          收款{overdueRecv > 0 && <span className="subnav-badge danger">{overdueRecv}</span>}
+        </button>
+        <button className={'subnav-item' + (mode === 'pay' ? ' on' : '')} onClick={() => setMode('pay')} type="button">
+          付款{unpaidOut > 0 && <span className="subnav-badge">{unpaidOut}</span>}
+        </button>
+      </div>
+      {mode === 'receive'
+        ? <ReceivablesView projects={projects} settings={settings} onUpdateProject={onUpdateProject} />
+        : <PayablesView projects={projects} settings={settings} onUpdateProject={onUpdateProject} onBatchUpdateProjects={onBatchUpdateProjects} />}
+    </section>
+  );
+}
+
+function PayablesView({ projects, settings, onUpdateProject, onBatchUpdateProjects }) {
   var [selected, setSelected] = useState({}); // { [rowKey]: true }
   var [modalRows, setModalRows] = useState(null); // 開 modal 時暫存的列表
   var [undoConfirming, setUndoConfirming] = useState(null); // 撤銷的兩步驟確認：rowKey | null
@@ -4973,7 +6066,7 @@ function PaymentsPage({ projects, settings, onUpdateProject, onBatchUpdateProjec
   var closeModal = function() { setModalRows(null); };
 
   // 真正寫入：把選取的外包標記為已付
-  var commitPayment = function(rows, paidDate) {
+  var commitPayment = function(rows) {
     var patches = {}; // projectId -> { outsources: [...] }
     rows.forEach(function(r) {
       var p = projects.find(function(x) { return x.id === r.projectId; });
@@ -4986,7 +6079,7 @@ function PaymentsPage({ projects, settings, onUpdateProject, onBatchUpdateProjec
       var patch = patches[r.projectId];
       if (!patch) return;
       patch.outsources = patch.outsources.map(function(o) {
-        return o.id === r.outsourceId ? Object.assign({}, o, { paid: true, paidDate: paidDate }) : o;
+        return o.id === r.outsourceId ? Object.assign({}, o, { paid: true, paidDate: r.paidDate || toISODate(TODAY) }) : o;
       });
     });
     onBatchUpdateProjects(patches);
@@ -5058,12 +6151,10 @@ function PaymentsPage({ projects, settings, onUpdateProject, onBatchUpdateProjec
 
   if (allRows.length === 0) {
     return (
-      <section className="payments-page">
-        <div className="payments-empty">
-          <h3>還沒有外包項目</h3>
-          <p className="muted">在任一專案的「成本面板」新增外包後，會自動出現在這裡。</p>
-        </div>
-      </section>
+      <div className="payments-empty">
+        <h3>還沒有外包項目</h3>
+        <p className="muted">在任一專案的「$」面板新增外包後，會自動出現在這裡。</p>
+      </div>
     );
   }
 
@@ -5075,14 +6166,14 @@ function PaymentsPage({ projects, settings, onUpdateProject, onBatchUpdateProjec
   };
 
   return (
-    <section className="payments-page">
+    <>
       <div className="pay-balance-bar">
         <div className="pay-balance-left">
           <span className="pay-balance-label">目前現金餘額</span>
           <span className={'pay-balance-value' + (todayBalance != null && todayBalance < 0 ? ' negative' : '')}>
             {todayBalance != null ? fmtNT(Math.round(todayBalance)) : '—'}
           </span>
-          <span className="pay-balance-hint">已實現（含 ≤ 今天的所有收支）</span>
+          <span className="pay-balance-hint">已實現（只算真的收到、真的付出的）</span>
         </div>
         <button className="pay-export-btn" onClick={handleExport} title="匯出本月付款明細給 Claude 對帳">📥 匯出</button>
       </div>
@@ -5120,7 +6211,7 @@ function PaymentsPage({ projects, settings, onUpdateProject, onBatchUpdateProjec
           onRemoveRow={(r) => setModalRows(function(prev) { return prev.filter(function(x) { return rowKey(x) !== rowKey(r); }); })}
         />
       )}
-    </section>
+    </>
   );
 }
 
@@ -5216,24 +6307,35 @@ function PayStat({ label, value, accent, warn }) {
 
 function ConfirmPaymentModal({ rows, onCancel, onConfirm, onRemoveRow }) {
   var todayISO = toISODate(TODAY);
-  var [date, setDate] = useState(todayISO);
+  // 每筆各自帶「表定付款日，但不晚於今天」；要一起改可用上方「全部設為」
+  var [dates, setDates] = useState(function() {
+    var m = {}; rows.forEach(function(r) { m[rowKey(r)] = defaultActualDate(r.effDate); }); return m;
+  });
+  var [bulk, setBulk] = useState('');
+  var setOne = function(r, d) { setDates(function(prev) { var n = Object.assign({}, prev); n[rowKey(r)] = d; return n; }); };
+  var applyBulk = function(d) { setBulk(d); if (!d) return; setDates(function(prev) { var n = Object.assign({}, prev); rows.forEach(function(r) { n[rowKey(r)] = d; }); return n; }); };
+  var allFilled = rows.every(function(r) { return !!dates[rowKey(r)]; });
   var total = rows.reduce(function(s, r) { return s + r.amount; }, 0);
   return (
     <div className="modal-backdrop" onClick={onCancel}>
       <div className="modal pay-confirm-modal" onClick={(e) => e.stopPropagation()}>
         <h2 className="modal-title">確認以下 {rows.length} 筆已付？</h2>
-        <div className="pay-modal-date">
-          <label>付款日期</label>
-          <input type="date" className="date-input" value={date} onChange={(e) => setDate(e.target.value)} />
-        </div>
+        {rows.length > 1 && (
+          <div className="pay-modal-date">
+            <label>全部設為同一天</label>
+            <input type="date" className="date-input" value={bulk} onChange={(e) => applyBulk(e.target.value)} />
+            <span className="muted" style={{ fontSize: 12 }}>留空＝各筆用自己的表定日</span>
+          </div>
+        )}
         <div className="pay-modal-list">
           {rows.map(function(r) {
             return (
               <div key={rowKey(r)} className="pay-modal-row">
                 <div className="pay-modal-row-name">
                   <span className="pay-outsource-name">{r.outsourceName}</span>
-                  <span className="pay-project-name">{r.projectTitle}</span>
+                  <span className="pay-project-name">{r.projectTitle}{r.effDate ? ' · 表定 ' + r.effDate : ''}</span>
                 </div>
+                <input type="date" className="date-input compact" value={dates[rowKey(r)] || ''} onChange={(e) => setOne(r, e.target.value)} title="實際付款日" />
                 <span className="pay-amount">{fmtNT(r.amount)}</span>
                 {rows.length > 1 && (
                   <button className="pay-modal-remove" onClick={() => onRemoveRow(r)} type="button" title="從本次確認中移除（不取消勾選）">×</button>
@@ -5250,8 +6352,8 @@ function ConfirmPaymentModal({ rows, onCancel, onConfirm, onRemoveRow }) {
           <button className="btn btn-ghost" onClick={onCancel}>取消</button>
           <button
             className="btn btn-primary"
-            disabled={rows.length === 0 || !date}
-            onClick={() => onConfirm(rows, date)}
+            disabled={rows.length === 0 || !allFilled}
+            onClick={() => onConfirm(rows.map(function(r) { return Object.assign({}, r, { paidDate: dates[rowKey(r)] }); }))}
           >
             全部確認已付
           </button>
@@ -5261,7 +6363,15 @@ function ConfirmPaymentModal({ rows, onCancel, onConfirm, onRemoveRow }) {
   );
 }
 
-function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdateExtraExpenses, onUpdateCustomCategories }) {
+function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdateExtraExpenses, onUpdateCustomCategories,
+                       onUpdateProject, outsourceRoles, customOutsourceRoles, onUpdateCustomOutsourceRoles,
+                       initialDetailId, onConsumeInitialDetail }) {
+  // 單案財務視窗：從專案損益表點列打開；也可由專案卡片的「完整損益 →」帶著 id 跳過來
+  const [detailId, setDetailId] = useState(null);
+  useEffect(() => {
+    if (initialDetailId) { setDetailId(initialDetailId); onConsumeInitialDetail && onConsumeInitialDetail(); }
+  }, [initialDetailId]);
+  const detailProject = detailId ? (allProjects || projects).find(p => p.id === detailId) : null;
   const handleExport = () => {
     const data = buildExportData(allProjects || projects, settings || {});
     const today = toISODate(TODAY);
@@ -5274,6 +6384,15 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
     [projects, settings, hasSettings]
   );
   const [summaryOpen, setSummaryOpen] = useState(true);
+  // 子分頁：每次點進財務預設是現金流量表；其他報表要看才點，不再全部疊在同一條捲軸上
+  const [sub, setSub] = useState(initialDetailId ? 'pnl' : 'cashflow'); // cashflow | pnl | fixed | vat | whatif
+  const SUBS = [
+    { id: 'cashflow', label: '現金流' },
+    { id: 'pnl',      label: '專案損益' },
+    { id: 'fixed',    label: '成本分攤' },
+    { id: 'vat',      label: '營業稅' },
+    { id: 'whatif',   label: '試算' },
+  ];
 
   const monthlyFixed = Number(settings?.monthlyFixedExpense) || 0;
   const allocations = useMemo(
@@ -5291,6 +6410,7 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
       id: p.id,
       title: p.title,
       client: p.client,
+      archived: !!p.archived,
       budget: Number(p.budget) || 0,
       netVAT: c.netVAT,
       outsourceTotal: c.outsourceTotal,
@@ -5310,20 +6430,38 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
   return (
     <>
       <div className="finance-toolbar">
+        <div className="subnav">
+          {SUBS.map(t => (
+            <button key={t.id} type="button" className={`subnav-item ${sub === t.id ? 'on' : ''}`} onClick={() => setSub(t.id)}>{t.label}</button>
+          ))}
+        </div>
         <button className="btn btn-ghost small" onClick={handleExport} title="下載一個 JSON 檔，整理好所有現況讓 Claude 看">
           📥 匯出給 Claude
         </button>
       </div>
 
-      <CashflowPanel
-        series={series}
-        hasSettings={hasSettings}
-        onOpenSettings={onOpenSettings}
-        defaultOpen={true}
-      />
+      {sub === 'cashflow' && (
+        <>
+          <CashflowPanel
+            series={series}
+            hasSettings={hasSettings}
+            onOpenSettings={onOpenSettings}
+            defaultOpen={true}
+          />
+          {/* 試算面板也放在圖下面：打額外支出時圖立刻變，不用來回切分頁 */}
+          <ExtraExpenseList
+            series={series}
+            expenses={settings.extraExpenses || []}
+            customCategories={settings.customExpenseCategories || []}
+            onChange={onUpdateExtraExpenses}
+            onUpdateCustomCategories={onUpdateCustomCategories}
+          />
+        </>
+      )}
 
-      <VatOverviewSection vatPeriods={series?.vatPeriods} />
+      {sub === 'vat' && <VatOverviewSection vatPeriods={series?.vatPeriods} />}
 
+      {sub === 'pnl' && (
       <section className="finance-summary">
         <div className="page-section-header collapsible">
           <button className="section-collapse-btn" onClick={() => setSummaryOpen(o => !o)} title={summaryOpen ? '收起' : '展開'}>
@@ -5348,9 +6486,14 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
                 <div className="num">淨利</div>
               </div>
               {rows.map(r => (
-                <div key={r.id} className="finance-row">
+                <div key={r.id} className={`finance-row clickable ${r.archived ? 'is-archived' : ''}`}
+                  onClick={() => setDetailId(r.id)} title="點開看這個案子的完整財務計算" role="button" tabIndex={0}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setDetailId(r.id); } }}>
                   <div className="finance-name-cell">
-                    <div className="finance-title">{r.title}</div>
+                    <div className="finance-title">
+                      {r.title}
+                      {r.archived && <span className="finance-archived-tag">已歸檔</span>}
+                    </div>
                     <div className="finance-client">{r.client}</div>
                   </div>
                   <div className="num" data-label="合約金額">{fmtNT(r.budget)}</div>
@@ -5363,7 +6506,7 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
                 </div>
               ))}
               <div className="finance-row totals">
-                <div className="finance-name-cell"><strong>合計（{rows.length} 個進行中）</strong></div>
+                <div className="finance-name-cell"><strong>合計（{rows.length} 個案子{rows.filter(r => r.archived).length > 0 ? `，含 ${rows.filter(r => r.archived).length} 個已歸檔` : ''}）</strong></div>
                 <div className="num strong" data-label="合約金額">{fmtNT(totals.budget)}</div>
                 <div className="num" data-label="應繳營業稅">{fmtNT(totals.netVAT)}</div>
                 <div className="num" data-label="外包總額">{fmtNT(totals.outsourceTotal)}</div>
@@ -5374,19 +6517,41 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
           )
         )}
       </section>
+      )}
 
-      <FixedCostBreakdownSection
-        projects={allProjects || projects}
-        monthlyFixed={monthlyFixed}
-      />
+      {sub === 'fixed' && (
+        <FixedCostBreakdownSection
+          projects={allProjects || projects}
+          monthlyFixed={monthlyFixed}
+          defaultOpen={true}
+        />
+      )}
 
-      <ExtraExpenseList
-        series={series}
-        expenses={settings.extraExpenses || []}
-        customCategories={settings.customExpenseCategories || []}
-        onChange={onUpdateExtraExpenses}
-        onUpdateCustomCategories={onUpdateCustomCategories}
-      />
+      {sub === 'whatif' && (
+        <ExtraExpenseList
+          series={series}
+          expenses={settings.extraExpenses || []}
+          customCategories={settings.customExpenseCategories || []}
+          onChange={onUpdateExtraExpenses}
+          onUpdateCustomCategories={onUpdateCustomCategories}
+        />
+      )}
+
+      {detailProject && (
+        <ProjectFinanceModal
+          project={detailProject}
+          allProjects={allProjects || projects}
+          onClose={() => setDetailId(null)}
+          onUpdate={(p) => onUpdateProject && onUpdateProject(detailProject.id, p)}
+          fixedCostShare={allocations[detailProject.id]}
+          overtimeShare={overtimeAlloc[detailProject.id]}
+          monthlyFixedExpense={monthlyFixed}
+          onOpenCashSettings={onOpenSettings}
+          outsourceRoles={outsourceRoles}
+          customOutsourceRoles={customOutsourceRoles}
+          onUpdateCustomOutsourceRoles={onUpdateCustomOutsourceRoles}
+        />
+      )}
     </>
   );
 }
@@ -5569,6 +6734,27 @@ function Tracker({ session, onSignOut }) {
     return () => window.removeEventListener('keydown', handler);
   }, []);
   const [currentPage, setCurrentPage] = useState('projects'); // 'projects' | 'finance' | 'payments' | 'calendar'
+  // 從專案卡片「完整損益 →」跳到財務頁並直接打開該案的視窗
+  const [financeDetailId, setFinanceDetailId] = useState(null);
+  const openFinanceDetail = (id) => { setFinanceDetailId(id); setCurrentPage('finance'); };
+  // 簡報模式：給客戶看畫面時，一鍵把敏感數字收起來——主畫面的合計金額／預估淨利、戰績列、
+  // 專案面板的外包區（含金額）。純顯示偏好，存在這台電腦，不進資料庫。
+  const PRESENTATION_KEY = 'jt745-presentation';
+  const [presentation, setPresentation] = useState(() => {
+    try { return localStorage.getItem(PRESENTATION_KEY) === '1' || localStorage.getItem('jt745-hide-profit') === '1'; } catch (e) { return false; }
+  });
+  const togglePresentation = () => {
+    setPresentation(v => {
+      try { localStorage.setItem(PRESENTATION_KEY, v ? '0' : '1'); localStorage.removeItem('jt745-hide-profit'); } catch (e) {}
+      return !v;
+    });
+  };
+  // 戰績列可以單獨隱藏（跟簡報模式無關）
+  const HIDE_TROPHY_KEY = 'jt745-hide-trophy';
+  const [hideTrophy, setHideTrophy] = useState(() => {
+    try { return localStorage.getItem(HIDE_TROPHY_KEY) === '1'; } catch (e) { return false; }
+  });
+  const setTrophyHidden = (v) => { setHideTrophy(v); try { localStorage.setItem(HIDE_TROPHY_KEY, v ? '1' : '0'); } catch (e) {} };
   const [sidebarOpen, setSidebarOpen] = useState(false); // 漢堡按鈕控制
 
   // Load projects from Supabase on mount
@@ -5644,6 +6830,27 @@ function Tracker({ session, onSignOut }) {
     saveUserSettings(next, uid);
   };
 
+  // 玻璃的動態高光：把游標相對位置寫進該塊玻璃的 CSS 變數（--mx / --my）
+  useEffect(() => {
+    const SEL = '.card:not(.has-cover), .sidebar, .subnav, .tabs-wrap, .modal, .save-indicator, .pay-overview, .cashflow-panel, .finance-table, .pay-group, .btn.btn-ghost, .card-right, .stage-labels';
+    let raf = 0, ev = null;
+    const onMove = (e) => {
+      ev = e;
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const el = ev.target && ev.target.closest ? ev.target.closest(SEL) : null;
+        if (!el) return;
+        const r = el.getBoundingClientRect();
+        if (!r.width) return;
+        el.style.setProperty('--mx', ((ev.clientX - r.left) / r.width * 100).toFixed(1) + '%');
+        el.style.setProperty('--my', ((ev.clientY - r.top) / r.height * 100).toFixed(1) + '%');
+      });
+    };
+    document.addEventListener('pointermove', onMove, { passive: true });
+    return () => { document.removeEventListener('pointermove', onMove); if (raf) cancelAnimationFrame(raf); };
+  }, []);
+
   // 有東西還沒存進資料庫就想關視窗 → 攔下來問一次
   useEffect(() => {
     const onBeforeUnload = (e) => {
@@ -5678,34 +6885,7 @@ function Tracker({ session, onSignOut }) {
 
   // 「距上次打開」變化摘要：快照存在這台裝置的瀏覽器（localStorage），
   // 載入完成後跟上次的快照比對，有進步就顯示橫幅。只在載入時跑一次。
-  const [visitDelta, setVisitDelta] = useState(null);
-  const visitSnapDone = useRef(false);
-  useEffect(() => {
-    if (!dataReady || loadError || visitSnapDone.current) return;
-    visitSnapDone.current = true;
-    const KEY = 'jt745-last-snapshot';
-    let old = null;
-    try { old = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) { old = null; }
-    const snap = { date: toISODate(TODAY), projects: {} };
-    projects.filter(p => !p.deleted).forEach(p => {
-      snap.projects[p.id] = { pct: projectPct(p), done: countDoneLeaves(p), title: p.title };
-    });
-    if (old && old.projects) {
-      let doneDelta = 0;
-      const gains = [];
-      Object.keys(snap.projects).forEach(id => {
-        const o = old.projects[id];
-        if (!o) return; // 新專案沒得比
-        const n = snap.projects[id];
-        if (n.done > o.done) doneDelta += n.done - o.done;
-        if (n.pct > o.pct) gains.push({ title: n.title, delta: n.pct - o.pct });
-      });
-      if (doneDelta > 0 || gains.length > 0) {
-        setVisitDelta({ since: old.date, doneDelta, gains });
-      }
-    }
-    try { localStorage.setItem(KEY, JSON.stringify(snap)); } catch (e) { /* 私密瀏覽等情況寫不進去，略過 */ }
-  }, [dataReady, loadError, projects]);
+  // 「距上次打開」摘要已移除（2026-09-07，使用者決定；里程碑呈現方式之後再議）
 
   // Celebration: detect completion transitions between renders.
   // prevProjectsRef stays null until the first ready render, so we don't
@@ -5886,6 +7066,8 @@ function Tracker({ session, onSignOut }) {
     if (expanded?.projectId === id) setExpanded(null);
   };
   const onPurgeProject = (id) => {
+    const victim = projects.find(p => p.id === id);
+    if (victim && victim.coverPath) deleteCoverImage(victim.coverPath);
     setProjects(prev => prev.filter(p => p.id !== id));
     deleteProjectInDB(id);
     if (expanded?.projectId === id) setExpanded(null);
@@ -5893,7 +7075,10 @@ function Tracker({ session, onSignOut }) {
   const onRestoreProject = (id) => onUpdateProject(id, { deleted: false, deletedAt: null });
   const onArchive = (id) => {
     setProjects(prev => {
-      const next = prev.map(p => p.id === id ? { ...p, archived: true, costsOpen: false, infoOpen: false } : p);
+      // 「已交件」＝製作結束。deliveredAt 記實際交件日（結算表算工期用這個，不含等尾款的時間）
+      const next = prev.map(p => p.id === id
+        ? { ...p, archived: true, deliveredAt: p.deliveredAt || p.completedAt || toISODate(TODAY), costsOpen: false, infoOpen: false }
+        : p);
       const changed = next.find(p => p.id === id);
       if (changed) saveProjectInDB(changed);
       return next;
@@ -6039,6 +7224,10 @@ function Tracker({ session, onSignOut }) {
   const activeProjects = projects.filter(p => !p.archived && !p.deleted);
   const archivedProjects = projects.filter(p => p.archived && !p.deleted);
   const deletedProjects = projects.filter(p => p.deleted);
+  // 財務相關的頁面一律吃「所有未刪除的專案」——歸檔只代表「製作結束了」，
+  // 不代表那筆錢沒發生過。只有真正刪除的專案才不列入財務計算。
+  // （2026-08-27：歸檔後現金流量表數字整片消失，就是這裡誤傳 activeProjects 造成的）
+  const financeProjects = projects.filter(p => !p.deleted);
   const visible = tab === 'active' ? activeProjects : tab === 'archived' ? archivedProjects : deletedProjects;
 
   // Focus mode: the ID of the currently "focused" project (one with open info/cost
@@ -6077,6 +7266,10 @@ function Tracker({ session, onSignOut }) {
 
   return (
     <div className={`app ${showQuoteSplash && !splashClosing ? 'has-splash' : ''}`}>
+      {/* 玻璃後面的東西：緩慢流動的中性色暈。玻璃要有東西可以折射、模糊、吸色，才不會像色塊 */}
+      <div className="ambient" aria-hidden="true">
+        <div className="blob b1" /><div className="blob b2" /><div className="blob b3" /><div className="blob b4" />
+      </div>
       {/* 固定在左下角，不分頁面、不隨捲動消失 */}
       <SaveIndicator
         settingsError={settingsError}
@@ -6102,6 +7295,13 @@ function Tracker({ session, onSignOut }) {
           <div className="daily-quote">「{getDailyQuote().text}」— {getDailyQuote().author}</div>
         </div>
         <div className="topbar-right">
+          <button className={`btn btn-ghost btn-icon ${presentation ? 'on' : ''}`} onClick={togglePresentation} title={presentation ? '關閉簡報模式（顯示金額、淨利、戰績、外包）' : '簡報模式：給客戶看畫面時，隱藏合計金額、淨利、戰績列、外包明細'}>
+            {presentation ? (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+            ) : (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            )}
+          </button>
           <button className="btn btn-ghost btn-icon" onClick={() => setShowCashSettings(true)} title="現金流設定（銀行餘額、固定支出）">
             💵
           </button>
@@ -6152,27 +7352,16 @@ function Tracker({ session, onSignOut }) {
           onChange={(p) => { setCurrentPage(p); setSidebarOpen(false); }}
           counts={{
             projects: activeProjects.length,
-            unpaidOutsources: activeProjects.reduce((n, p) => n + (p.outsources || []).filter(o => !isOutsourcePaid(o)).length, 0) || null,
+            unpaidOutsources: (
+              financeProjects.reduce((n, p) => n + (p.outsources || []).filter(o => !isOutsourcePaid(o)).length, 0)
+              + buildReceivableRows(financeProjects).filter(r => r.bucket === 'overdue').length
+            ) || null,
           }}
         />
 
         <main className="app-main">
           {currentPage === 'projects' && (
             <>
-              {visitDelta && (
-                <div className="delta-banner">
-                  <span className="delta-label">
-                    距上次打開{visitDelta.since === toISODate(TODAY) ? '（今天稍早）' : `（${fmtDate(new Date(visitDelta.since))}）`}
-                  </span>
-                  {visitDelta.doneDelta > 0 && (
-                    <span className="delta-item">完成 <strong>+{visitDelta.doneDelta}</strong> 項</span>
-                  )}
-                  {visitDelta.gains.map(g => (
-                    <span key={g.title} className="delta-item">{g.title} <strong>+{g.delta}%</strong></span>
-                  ))}
-                  <button className="delta-dismiss" onClick={() => setVisitDelta(null)} title="關閉">×</button>
-                </div>
-              )}
               <div className="tabs-row">
                 <div className="tabs-wrap" tabIndex={0}>
                   <button className="tabs-trigger" aria-label="切換分頁">
@@ -6203,9 +7392,21 @@ function Tracker({ session, onSignOut }) {
                       <span className="sep">·</span>
                     </>
                   )}
-                  <span>合計金額 <strong>{fmtNT(totalBudget)}</strong></span>
-                  <span className="sep">·</span>
-                  <span>預估淨利 <strong>{fmtNT(totalProfit)}</strong></span>
+                  {presentation ? (
+                    <span className="presentation-pill" title="簡報模式：金額、淨利、戰績、外包已隱藏。點右上角眼睛關閉">簡報模式</span>
+                  ) : (
+                    <>
+                      <span>合計金額 <strong>{fmtNT(totalBudget)}</strong></span>
+                      <span className="sep">·</span>
+                      <span>預估淨利 <strong>{fmtNT(totalProfit)}</strong></span>
+                    </>
+                  )}
+                  {!presentation && hideTrophy && archivedProjects.length > 0 && (
+                    <>
+                      <span className="sep">·</span>
+                      <button className="link-btn-inline" onClick={() => setTrophyHidden(false)} type="button">顯示戰績</button>
+                    </>
+                  )}
                   <span className="sep">·</span>
                   <span style={{ color: urgentCount ? 'var(--warn)' : undefined }}>
                     <strong style={{ color: urgentCount ? 'var(--warn)' : undefined }}>{urgentCount}</strong> 個 14 天內到期
@@ -6218,7 +7419,7 @@ function Tracker({ session, onSignOut }) {
                 {visible.length === 0 && (
                   <div className="empty-state">
                     {tab === 'active' ? '目前沒有進行中專案。按 N 新增一個。'
-                      : tab === 'archived' ? '尚無已歸檔專案。完成度 100% 的專案會出現在這裡。'
+                      : tab === 'archived' ? '尚無已交件專案。達 100% 後按「已交件」的案子會收到這裡；款項還沒收齊的，仍會留在「收付款」頁追蹤。'
                       : '垃圾桶是空的。已刪除的專案會出現在這裡，可隨時還原。'}
                   </div>
                 )}
@@ -6247,11 +7448,14 @@ function Tracker({ session, onSignOut }) {
                       outsourceRoles={[...DEFAULT_OUTSOURCE_ROLES, ...((globalSettings?.customOutsourceRoles) || [])]}
                       customOutsourceRoles={globalSettings?.customOutsourceRoles || []}
                       onUpdateCustomOutsourceRoles={onUpdateCustomOutsourceRoles}
+                      onOpenFullFinance={openFinanceDetail}
+                      presentation={presentation}
                       isFocused={focusedProjectId === p.id}
                       anyFocused={!!focusedProjectId}
                       onRestore={onRestoreProject}
                       onPurgeProject={onPurgeProject}
                       onArchive={tab === 'active' ? onArchive : onUnarchive}
+                      archiveMode={tab === 'active' ? 'deliver' : 'restore'}
                       density={t.density}
                       stageVariant={t.stageVariant}
                       panelStyle={t.panelStyle}
@@ -6271,26 +7475,32 @@ function Tracker({ session, onSignOut }) {
                   );
                 })}
               </div>
-              {tab === 'active' && archivedProjects.length > 0 && (
-                <TrophyStrip projects={archivedProjects} />
+              {tab === 'active' && archivedProjects.length > 0 && !presentation && !hideTrophy && (
+                <TrophyStrip projects={archivedProjects} onHide={() => setTrophyHidden(true)} />
               )}
             </>
           )}
 
           {currentPage === 'finance' && (
             <FinancePage
-              projects={activeProjects}
+              projects={financeProjects}
               allProjects={projects}
               settings={globalSettings || {}}
               onOpenSettings={() => setShowCashSettings(true)}
               onUpdateExtraExpenses={onUpdateExtraExpenses}
               onUpdateCustomCategories={onUpdateCustomCategories}
+              onUpdateProject={onUpdateProject}
+              outsourceRoles={[...DEFAULT_OUTSOURCE_ROLES, ...((globalSettings?.customOutsourceRoles) || [])]}
+              customOutsourceRoles={globalSettings?.customOutsourceRoles || []}
+              onUpdateCustomOutsourceRoles={onUpdateCustomOutsourceRoles}
+              initialDetailId={financeDetailId}
+              onConsumeInitialDetail={() => setFinanceDetailId(null)}
             />
           )}
 
           {currentPage === 'payments' && (
             <PaymentsPage
-              projects={activeProjects}
+              projects={financeProjects}
               settings={globalSettings || {}}
               onUpdateProject={onUpdateProject}
               onBatchUpdateProjects={onBatchUpdateProjects}
@@ -6322,7 +7532,7 @@ function Tracker({ session, onSignOut }) {
         <div className="legend">
           <span className="legend-dot todo">未開始</span>
           <span className="legend-dot active">進行中</span>
-          <span className="legend-dot done">已完成 · 自動縮小</span>
+          <span className="legend-dot done">已完成</span>
         </div>
       </div>
 

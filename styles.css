@@ -5110,3 +5110,901 @@ body::before {
 @media (prefers-reduced-motion: reduce) {
   .save-indicator.is-saving .save-dot { animation: none; }
 }
+
+/* 財務摘要表：已歸檔的案子仍計入（錢已經發生過），但視覺上退到後面 */
+.finance-row.is-archived .finance-title,
+.finance-row.is-archived .finance-client { color: var(--text-3); }
+.finance-row.is-archived .num { opacity: 0.72; }
+.finance-archived-tag {
+  margin-left: 7px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-sunken);
+  color: var(--text-3);
+  font-size: 10px;
+  font-weight: 500;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+/* ============================================================
+   子分頁導覽（財務頁的 現金流／專案損益／…、收付款頁的 收款／付款）
+   ============================================================ */
+.subnav {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+}
+.subnav-item {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 6px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 0.15s ease, color 0.15s ease;
+  white-space: nowrap;
+}
+.subnav-item:hover { color: var(--text); }
+.subnav-item.on {
+  background: var(--bg-elev);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+.subnav-badge {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--stage-active);
+  color: var(--stage-active-fg);
+  font-variant-numeric: tabular-nums;
+}
+.subnav-badge.danger { background: var(--warn); color: #fff; }
+.finance-toolbar { justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+.payments-page .subnav { margin-bottom: 18px; }
+
+/* ============================================================
+   收款排程：新增「已收」欄
+   ============================================================ */
+.payment-row { grid-template-columns: minmax(0, 1fr) 96px 150px minmax(0, 1fr) 170px 24px; }
+.received-cell { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.received-cell .received-date { max-width: 132px; }
+.payment-row.is-received .payment-label { color: var(--stage-done); }
+.payment-row.is-received .num-val { color: var(--stage-done); }
+
+/* 專案「$」面板瘦身後的案件類型列 */
+.cost-type-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0 4px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.cost-type-label { font-weight: 500; }
+.cost-type-hint { color: var(--text-3); font-size: 12px; }
+
+/* 卡片倒數區：已交件但還沒收齊 */
+.billing-note {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--stage-active-fg);
+  background: color-mix(in srgb, var(--stage-active) 22%, transparent);
+  padding: 2px 8px;
+  border-radius: 999px;
+  margin-top: 2px;
+}
+
+/* 主畫面 meta-strip 的淨利隱藏開關 */
+.profit-cell { display: inline-flex; align-items: center; gap: 6px; }
+.eye-toggle {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-4);
+  padding: 2px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-grid;
+  place-items: center;
+  line-height: 0;
+}
+.eye-toggle:hover { color: var(--text); background: var(--bg-sunken); }
+
+/* 收款列的「收到了」按鈕與入帳日 */
+.pay-receive-btn {
+  appearance: none;
+  border: 1px solid var(--stage-done);
+  background: color-mix(in srgb, var(--stage-done) 10%, transparent);
+  color: var(--stage-done);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 11px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: none;
+}
+.pay-receive-btn:hover { background: var(--stage-done); color: #fff; }
+.received-inline { display: inline-flex; align-items: center; gap: 6px; }
+.received-inline .date-input.compact { padding: 2px 6px; font-size: 12px; }
+
+/* ============================================================
+   專案劇照：滿版圖片 + 玻璃質感（iOS 26 liquid glass 方向）
+   圖是內容、控制項是玻璃；文字白色壓在暗漸層上確保可讀
+   ============================================================ */
+.card.has-cover {
+  background: #15140f;
+  border-color: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+.card.has-cover .card-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background-size: cover;
+  background-position: center;      /* 必須跟裁切預覽（.cover-crop-img）完全一樣，否則所見非所得 */
+  background-repeat: no-repeat;
+  /* 取景：translate 是拖曳位移（% 相對於卡片），zoom 是滑桿；1.02 讓邊緣不露白 */
+  transform: translate(var(--cx, 0%), var(--cy, 0%)) scale(calc(var(--cover-zoom, 1) * 1.02));
+  transform-origin: center;
+  transition: transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.card.has-cover:hover .card-cover { transform: translate(var(--cx, 0%), var(--cy, 0%)) scale(calc(var(--cover-zoom, 1) * 1.045)); }
+.card.has-cover .card-cover::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(0,0,0,0.06) 0%, rgba(0,0,0,0.30) 48%, rgba(0,0,0,0.66) 100%),
+    linear-gradient(90deg, rgba(0,0,0,0.22), rgba(0,0,0,0) 40%, rgba(0,0,0,0) 60%, rgba(0,0,0,0.22));
+}
+.card.has-cover > *:not(.card-cover) { position: relative; z-index: 1; }
+/* 例外：右上角那排動作鈕本來就是絕對定位，被上面那條改成 relative 會跑到左上角、還被蓋住按不到 */
+.card.has-cover > .card-actions-abs { position: absolute; z-index: 3; }
+.card.has-cover::after { background: linear-gradient(118deg, rgba(255,255,255,0.16), rgba(255,255,255,0) 34%); }
+.card.has-cover.has-color::before { z-index: 2; }
+
+.card.has-cover .card-row { padding: 26px 28px 18px; min-height: 120px; }
+.card.has-cover .project-title,
+.card.has-cover .card-center .project-title { color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.45), 0 4px 18px rgba(0,0,0,0.35); font-size: 24px; }
+.card.has-cover .client-name { color: rgba(255,255,255,0.82); text-shadow: 0 1px 8px rgba(0,0,0,0.45); }
+.card.has-cover .client-name::before { color: rgba(255,255,255,0.5); }
+
+/* 亮玻璃（有文字的地方一律墊這個）：高模糊 + 拉亮 + 白色薄膜，深色字才看得清楚。
+   標題與客戶名例外——它們壓在畫面中央，不要擋圖，用陰影撐可讀性。 */
+.card.has-cover .stage-tag,
+.card.has-cover .card-right,
+.card.has-cover .card-meta-toggle,
+.card.has-cover .card-meta,
+.card.has-cover .stage-bar.variant-bar .stage-labels {
+  background: rgba(255, 255, 255, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(28px) saturate(1.4) brightness(1.18);
+  -webkit-backdrop-filter: blur(28px) saturate(1.4) brightness(1.18);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.75), 0 6px 18px rgba(0,0,0,0.18);
+  color: var(--text);
+  text-shadow: none;
+}
+[data-theme="dark"] .card.has-cover .stage-tag,
+[data-theme="dark"] .card.has-cover .card-right,
+[data-theme="dark"] .card.has-cover .card-meta-toggle,
+[data-theme="dark"] .card.has-cover .card-meta,
+[data-theme="dark"] .card.has-cover .stage-bar.variant-bar .stage-labels {
+  background: rgba(255, 255, 255, 0.30);
+  border-color: rgba(255, 255, 255, 0.40);
+  color: #15140f;
+}
+.card.has-cover .stage-tag { background: rgba(253, 230, 138, 0.78); color: #92400e; border-color: rgba(255,255,255,0.6); }
+.card.has-cover .card-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  border-radius: 18px;
+}
+.card.has-cover .countdown-num,
+.card.has-cover .countdown-label,
+.card.has-cover .countdown .due-date { color: #15140f; }
+.card.has-cover .countdown.warn .countdown-num,
+.card.has-cover .countdown.warn .countdown-label { color: #b91c1c; }
+.card.has-cover .countdown.overtime .countdown-num,
+.card.has-cover .countdown.overtime .countdown-label { color: #c2410c; }
+.card.has-cover .countdown.done .countdown-num,
+.card.has-cover .countdown.done .countdown-label { color: #047857; }
+.card.has-cover .early-note, .card.has-cover .overtime-note { color: #3f3b33; }
+.card.has-cover .completion .track { stroke: rgba(0,0,0,0.14); }
+.card.has-cover .completion .fill { stroke: #15140f; }
+.card.has-cover .completion.done .fill { stroke: #047857; }
+.card.has-cover .completion-text { color: #15140f; }
+.card.has-cover .billing-note { background: rgba(251, 191, 36, 0.35); color: #78350f; }
+
+.card.has-cover .card-meta-toggle { color: #15140f; }
+.card.has-cover .card-meta { padding: 8px 14px; border-radius: 12px; color: #15140f; }
+.card.has-cover .card-meta .meta-label { color: #5a554b; }
+.card.has-cover .card-meta .meta-value.muted { color: #5a554b; }
+.card.has-cover .card-meta .sep { color: rgba(0,0,0,0.3); }
+.card.has-cover .card-action {
+  background: rgba(255,255,255,0.55);
+  border-color: rgba(255,255,255,0.7);
+  color: #15140f;
+  backdrop-filter: blur(16px) brightness(1.15);
+  -webkit-backdrop-filter: blur(16px) brightness(1.15);
+}
+.card.has-cover .card-action:hover { background: rgba(255,255,255,0.85); }
+.card.has-cover .card-action.danger:hover { background: rgba(239,68,68,0.85); color: #fff; }
+.card.has-cover .drag-handle { opacity: 0.7; filter: invert(1); }
+
+/* 階段長條（新結構：.stage-track + .stage-labels，見檔尾「多鄰國式進度條」） */
+.card.has-cover .stage-bar .insert-plus { background: #fff; color: #111; }
+
+/* 展開的面板（階段細項／專案資訊／收付款）：厚一點的玻璃，維持原本的文字顏色 */
+.card.has-cover .detail-panel,
+.card.has-cover .info-panel,
+.card.has-cover .cost-panel {
+  margin: 0 16px 16px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--bg-elev) 90%, transparent);
+  backdrop-filter: blur(26px) saturate(1.4);
+  -webkit-backdrop-filter: blur(26px) saturate(1.4);
+  border: 1px solid rgba(255,255,255,0.45);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.7), 0 12px 32px rgba(0,0,0,0.28);
+  color: var(--text);
+}
+[data-theme="dark"] .card.has-cover .detail-panel,
+[data-theme="dark"] .card.has-cover .info-panel,
+[data-theme="dark"] .card.has-cover .cost-panel {
+  border-color: rgba(255,255,255,0.14);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.10), 0 12px 32px rgba(0,0,0,0.45);
+}
+[data-theme="dark"] .card.has-cover { border-color: rgba(255,255,255,0.10); }
+
+/* 編輯視窗的劇照欄位 */
+.cover-field { display: flex; align-items: center; gap: 14px; }
+.cover-preview {
+  width: 160px;
+  height: 72px;
+  border-radius: 10px;
+  background-size: cover;
+  background-position: center 38%;
+  border: 1px solid var(--border);
+  flex: none;
+}
+.cover-preview.empty {
+  display: grid;
+  place-items: center;
+  color: var(--text-4);
+  font-size: 12px;
+  background: var(--bg-sunken);
+}
+.cover-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+@media (prefers-reduced-motion: reduce) {
+  .card.has-cover .card-cover, .card.has-cover:hover .card-cover { transform: none; transition: none; }
+}
+@media (max-width: 640px) {
+  .card.has-cover .card-row { padding: 18px 18px 12px; min-height: 96px; }
+  .card.has-cover .stage-bar.variant-bar { margin: 0 14px 16px; }
+  .payment-row { grid-template-columns: 1fr 1fr; }
+}
+
+/* 視窗：內容超過螢幕高度可捲動（劇照欄位加進來後編輯視窗變高了） */
+.modal-backdrop { overflow-y: auto; align-items: start; padding-top: max(24px, 4vh); }
+.modal { max-height: calc(100vh - 48px); overflow-y: auto; -webkit-overflow-scrolling: touch; }
+
+/* 單案財務視窗（財務 → 專案損益 → 點列） */
+.modal.modal-wide { max-width: 980px; padding: 28px 32px 32px; position: relative; }
+.modal-close {
+  position: absolute; top: 14px; right: 14px;
+  width: 30px; height: 30px; border-radius: 50%;
+  border: 1px solid var(--border); background: var(--bg-sunken); color: var(--text-2);
+  font-size: 18px; line-height: 1; cursor: pointer; display: grid; place-items: center;
+}
+.modal-close:hover { background: var(--bg-hover); color: var(--text); }
+.finance-modal .cost-panel.finance-detail { padding: 0; }
+.finance-row.clickable { cursor: pointer; }
+.finance-row.clickable:hover { background: color-mix(in srgb, var(--text) 3%, transparent); }
+.finance-row.clickable .finance-title::after { content: ' ↗'; color: var(--text-4); font-size: 11px; opacity: 0; transition: opacity 0.15s; }
+.finance-row.clickable:hover .finance-title::after { opacity: 1; }
+.full-finance-btn { margin-top: 8px; }
+
+/* ============================================================
+   多鄰國式進度條（variant-bar 新結構）
+   .stage-bar.variant-bar > .stage-track（一條）+ .stage-labels（下方標籤）
+   每段寬度=份量、固定不動；每段依完成比例填色；填色連續=一整條
+   ============================================================ */
+.stage-bar.variant-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  height: auto;
+  align-items: stretch;
+}
+.stage-bar.variant-bar .stage-track {
+  display: flex;
+  align-items: stretch;
+  height: 16px;
+  border-radius: 999px;
+}
+.stage-bar.variant-bar .stage-track .segment {
+  flex: 1 1 0;
+  min-width: 8px;
+  height: 100%;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: var(--stage-todo);
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+  justify-content: flex-start;
+}
+.stage-bar.variant-bar .stage-track > .segment:first-of-type { border-radius: 999px 4px 4px 999px; }
+.stage-bar.variant-bar .stage-track > .segment:last-of-type  { border-radius: 4px 999px 999px 4px; }
+/* 進行中的階段：底色染一點琥珀，讓「現在在哪」還看得出來；填色一律翠綠 */
+.stage-bar.variant-bar .stage-track .segment.status-active { background: color-mix(in srgb, var(--stage-active) 26%, var(--stage-todo)); color: inherit; }
+.stage-bar.variant-bar .stage-track .segment.status-done   { background: var(--stage-todo); }
+.stage-bar.variant-bar .stage-track .segment:hover { transform: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 18%, transparent); }
+.stage-bar.variant-bar .stage-track .segment.selected { outline: 2px solid var(--text); outline-offset: 2px; }
+
+.stage-bar.variant-bar .seg-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 0;
+  background: linear-gradient(90deg, #059669 0%, #10b981 55%, #34d399 100%);
+  box-shadow: 2px 0 10px rgba(16, 185, 129, 0.55);   /* 填色前緣的光暈 */
+  transition: width 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+  overflow: hidden;
+}
+/* 流動光澤：斜向亮帶不斷從左往右掃（多鄰國那種「活的」感覺） */
+.stage-bar.variant-bar .seg-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(115deg,
+    transparent 30%,
+    rgba(255,255,255,0.18) 42%,
+    rgba(255,255,255,0.55) 50%,
+    rgba(255,255,255,0.18) 58%,
+    transparent 70%);
+  background-size: 240% 100%;
+  animation: seg-sheen 2.8s linear infinite;
+}
+@keyframes seg-sheen {
+  from { background-position: 120% 0; }
+  to   { background-position: -120% 0; }
+}
+/* 已滿的段落：光澤慢一點、淡一點，焦點留給正在跑的那段 */
+.stage-bar.variant-bar .segment.full .seg-fill::after { animation-duration: 5.5s; opacity: 0.6; }
+.stage-bar.variant-bar .segment.full .seg-fill { box-shadow: none; }
+
+/* 標籤列：跟 track 同樣的份量寬度對齊 */
+.stage-bar.variant-bar .stage-labels { display: flex; align-items: baseline; }
+.stage-bar.variant-bar .label-gap { flex: 0 0 3px; }
+.stage-bar.variant-bar .seg-name {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-3);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  display: inline-flex;
+  justify-content: center;
+  align-items: baseline;
+  gap: 4px;
+  line-height: 1.3;
+}
+.stage-bar.variant-bar .seg-name .seg-name-text { overflow: hidden; text-overflow: ellipsis; }
+.stage-bar.variant-bar .seg-name .seg-pct { font-variant-numeric: tabular-nums; color: var(--text-4); font-size: 10.5px; flex: none; }
+.stage-bar.variant-bar .seg-name.status-active { color: var(--text); font-weight: 600; }
+.stage-bar.variant-bar .seg-name.status-active .seg-pct { color: var(--stage-active-fg); }
+.stage-bar.variant-bar .seg-name.status-done { color: var(--stage-done); }
+.stage-bar.variant-bar .seg-name.status-done .seg-pct { color: var(--stage-done); opacity: 0.8; }
+.stage-bar.variant-bar .seg-name.selected { text-decoration: underline; text-underline-offset: 3px; }
+.stage-bar.variant-bar .seg-name:hover { color: var(--text); }
+.card.dense .stage-bar.variant-bar .stage-track { height: 12px; }
+.card.dense .stage-bar.variant-bar .seg-name { font-size: 10.5px; }
+
+/* 劇照卡片：track 放進玻璃托盤，標籤白色 */
+.card.has-cover .stage-bar.variant-bar .stage-track {
+  padding: 4px;
+  height: 24px;
+  background: rgba(20, 18, 14, 0.34);
+  border: 1px solid rgba(255,255,255,0.20);
+  backdrop-filter: blur(18px) saturate(1.5);
+  -webkit-backdrop-filter: blur(18px) saturate(1.5);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), 0 8px 24px rgba(0,0,0,0.22);
+}
+.card.has-cover .stage-bar.variant-bar .stage-track .segment { background: rgba(255,255,255,0.14); }
+.card.has-cover .stage-bar.variant-bar .stage-track .segment.status-active { background: rgba(251, 191, 36, 0.30); }
+.card.has-cover .stage-bar.variant-bar .stage-labels { padding: 4px 10px; border-radius: 999px; }
+.card.has-cover .stage-bar.variant-bar .seg-name { color: #5a554b; text-shadow: none; }
+.card.has-cover .stage-bar.variant-bar .seg-name .seg-pct { color: #8a8478; }
+.card.has-cover .stage-bar.variant-bar .seg-name.status-active { color: #15140f; }
+.card.has-cover .stage-bar.variant-bar .seg-name.status-active .seg-pct { color: #92400e; }
+.card.has-cover .stage-bar.variant-bar .seg-name.status-done { color: #047857; }
+.card.has-cover .stage-bar.variant-bar .seg-name.status-done .seg-pct { color: #047857; }
+/* 亮玻璃托盤 */
+.card.has-cover .stage-bar.variant-bar .stage-track {
+  background: rgba(255, 255, 255, 0.36);
+  border-color: rgba(255,255,255,0.55);
+  backdrop-filter: blur(24px) saturate(1.4) brightness(1.15);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4) brightness(1.15);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.7), 0 6px 18px rgba(0,0,0,0.18);
+}
+.card.has-cover .stage-bar.variant-bar .stage-track .segment { background: rgba(0,0,0,0.12); }
+.card.has-cover .stage-bar.variant-bar .stage-track .segment.status-active { background: rgba(245, 158, 11, 0.35); }
+.card.has-cover .stage-bar .insert-plus { background: #fff; color: #111; }
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-bar.variant-bar .seg-fill::after { animation: none; }
+  .stage-bar.variant-bar .seg-fill { transition: none; }
+}
+
+/* ============================================================
+   數量型細項（47 / 100 卡）
+   ============================================================ */
+.qty-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-sunken);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+.qty-control.status-done { border-color: var(--stage-done); background: color-mix(in srgb, var(--stage-done) 10%, transparent); }
+.qty-control.status-active { border-color: color-mix(in srgb, var(--stage-active) 60%, var(--border)); }
+.qty-btn {
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid; place-items: center;
+}
+.qty-btn:hover:not(:disabled) { background: var(--text); color: var(--bg); border-color: var(--text); }
+.qty-btn:disabled { opacity: 0.35; cursor: default; }
+.qty-input {
+  width: 44px;
+  text-align: right;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  padding: 0 2px;
+  -moz-appearance: textfield;
+}
+.qty-input::-webkit-outer-spin-button, .qty-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.qty-sep { color: var(--text-4); }
+.qty-total {
+  border: none; background: none; font: inherit; color: var(--text-2); cursor: pointer; padding: 0 2px;
+  text-decoration: underline dotted; text-underline-offset: 3px;
+}
+.qty-total:hover { color: var(--text); }
+.qty-pct { margin-left: 4px; color: var(--text-3); font-size: 11px; min-width: 32px; text-align: right; }
+.add-qty-form { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.add-qty-form .input { max-width: 200px; }
+.add-qty-form .qty-total-input { max-width: 88px; }
+
+/* ---------- 簡報模式 / 戰績隱藏 ---------- */
+.presentation-pill {
+  padding: 3px 10px; border-radius: 999px;
+  background: var(--bg-sunken); border: 1px solid var(--border); color: var(--text-2);
+  font-size: 11.5px; font-weight: 600; letter-spacing: 0.02em;
+}
+.btn-icon.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+.trophy-strip { position: relative; }
+.trophy-hide {
+  margin-left: auto; border: none; background: none; color: var(--text-4);
+  font: inherit; font-size: 11.5px; cursor: pointer; padding: 2px 6px; border-radius: 6px;
+}
+.trophy-hide:hover { color: var(--text); background: var(--bg-sunken); }
+
+/* ---------- 專案面板：大字損益、外包收折 ---------- */
+.cost-summary { align-items: stretch; }
+.summary-item.big-pnl { padding-left: 24px; border-left: 1px solid var(--border); text-align: right; }
+.summary-item.big-pnl .summary-value.big {
+  font-family: var(--font-display); font-size: 34px; font-weight: 700; letter-spacing: -0.03em; line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.summary-item.big-pnl.gain .summary-value.big { color: var(--stage-done); }
+.summary-item.big-pnl.loss .summary-value.big { color: var(--warn); }
+.summary-item.big-pnl .summary-sub { margin-top: 4px; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.cost-block-h.collapsible-h {
+  appearance: none; background: none; border: none; padding: 0; font: inherit; color: inherit;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 8px;
+}
+.cost-block-h.collapsible-h .chevron { color: var(--text-3); font-size: 12px; }
+.ghost-pill.muted { color: var(--text-4); }
+.outsource-section.collapsed { padding-bottom: 4px; }
+
+/* ---------- 付款確認：每筆各自日期 ---------- */
+.pay-modal-row .date-input.compact { padding: 3px 6px; font-size: 12px; margin: 0 8px; }
+.pay-modal-date .muted { margin-left: 8px; color: var(--text-3); }
+
+/* ---------- 劇照取景編輯器 ---------- */
+.modal.edit-project { max-width: 640px; }
+.cover-field { flex-direction: column; align-items: stretch; gap: 10px; }
+.cover-crop { display: flex; flex-direction: column; gap: 8px; }
+.cover-crop-box {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1120 / 200;      /* 對齊收合狀態的卡片 */
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #111;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.cover-crop-box:active { cursor: grabbing; }
+.cover-crop-img {
+  position: absolute; inset: 0;
+  background-size: cover; background-position: center; background-repeat: no-repeat;
+  transform: translate(var(--cx, 0%), var(--cy, 0%)) scale(calc(var(--cover-zoom, 1) * 1.02));
+  transform-origin: center;
+  pointer-events: none;
+}
+.cover-crop-hint {
+  position: absolute; right: 8px; bottom: 6px;
+  font-size: 10.5px; color: rgba(255,255,255,0.85);
+  background: rgba(0,0,0,0.35); padding: 2px 8px; border-radius: 999px;
+  pointer-events: none;
+}
+.cover-crop-tools { display: flex; align-items: center; gap: 10px; }
+.cover-crop-tools input[type="range"] { flex: 1; accent-color: var(--text); }
+.cover-crop-label { font-size: 12px; color: var(--text-2); }
+.cover-crop-zoom { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; min-width: 44px; }
+
+/* ---------- 資金還能撐多久 ---------- */
+.runway {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas: "label big" "label sub";
+  column-gap: 18px;
+  align-items: baseline;
+  padding: 16px 22px 14px;
+  border-bottom: 1px solid var(--border);
+  --tone: #2563eb;
+}
+.runway.tone-blue   { --tone: #2563eb; }
+.runway.tone-purple { --tone: #7c3aed; }
+.runway.tone-red    { --tone: var(--warn); }
+[data-theme="dark"] .runway.tone-blue   { --tone: #60a5fa; }
+[data-theme="dark"] .runway.tone-purple { --tone: #a78bfa; }
+.runway-label { grid-area: label; align-self: center; font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-3); }
+.runway-big { grid-area: big; font-family: var(--font-display); font-size: 30px; font-weight: 700; letter-spacing: -.03em; line-height: 1.1; color: var(--tone); font-variant-numeric: tabular-nums; }
+.runway-sub { grid-area: sub; font-size: 12px; color: var(--text-3); margin-top: 2px; }
+@media (max-width: 640px) { .runway { grid-template-columns: 1fr; grid-template-areas: "label" "big" "sub"; } .runway-big { font-size: 24px; } }
+
+/* ============================================================
+   液態玻璃 C 級（使用者 2026-09-07 選定）：折射 + 邊緣反光 + 滑鼠高光 + 厚毛玻璃
+   背景：中性、低飽和的流動色暈（玻璃需要後面有東西）
+   ============================================================ */
+.ambient { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.ambient .blob { position: absolute; border-radius: 50%; filter: blur(80px); opacity: .85; will-change: transform; }
+.ambient .b1 { width: 60vw; height: 60vw; left: -18vw; top: -22vw; background: #e2cfb4; animation: amb1 30s ease-in-out infinite alternate; }
+.ambient .b2 { width: 52vw; height: 52vw; right: -14vw; top: 2vw;  background: #b9c8d6; animation: amb2 36s ease-in-out infinite alternate; }
+.ambient .b3 { width: 48vw; height: 48vw; left: 20vw; bottom: -24vw; background: #d7b39d; animation: amb3 42s ease-in-out infinite alternate; }
+.ambient .b4 { width: 34vw; height: 34vw; right: 18vw; bottom: 0; background: #c9cfb4; animation: amb1 26s ease-in-out infinite alternate-reverse; }
+[data-theme="dark"] .ambient .blob { opacity: .7; }
+[data-theme="dark"] .ambient .b1 { background: #3a2f26; }
+[data-theme="dark"] .ambient .b2 { background: #23303a; }
+[data-theme="dark"] .ambient .b3 { background: #3b2f3a; }
+[data-theme="dark"] .ambient .b4 { background: #2b2a24; }
+@keyframes amb1 { to { transform: translate(12vw, 9vw) scale(1.14); } }
+@keyframes amb2 { to { transform: translate(-11vw, 12vw) scale(0.92); } }
+@keyframes amb3 { to { transform: translate(9vw, -11vw) scale(1.10); } }
+@media (prefers-reduced-motion: reduce) { .ambient .blob { animation: none; } }
+/* 色暈放在 .app 這一層的最底（z:-1）。.app 自成堆疊層，其他子元素完全不用動 z-index，
+   聚焦遮罩 / 卡片 / 儲存燈號的原有層級關係不受影響（2026-09-07 曾因 z-index:1 把聚焦卡片壓到遮罩下） */
+.app { position: relative; isolation: isolate; }
+.ambient { z-index: -1; }
+
+/* 玻璃材質：容器類 */
+.card:not(.has-cover),
+.sidebar,
+.subnav,
+.tabs-wrap,
+.modal,
+.save-indicator,
+.pay-overview,
+.cashflow-panel,
+.finance-table,
+.pay-group,
+.pay-balance-bar {
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--bg-elev) 58%, transparent),
+    color-mix(in srgb, var(--bg-elev) 40%, transparent));
+  border: 1px solid color-mix(in srgb, #fff 55%, var(--border));
+  -webkit-backdrop-filter: url(#lens) blur(26px) saturate(1.7) brightness(1.05);
+  backdrop-filter: url(#lens) blur(26px) saturate(1.7) brightness(1.05);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255,255,255,.85),
+    inset 0 -1px 0 rgba(20,18,12,.08),
+    inset 1px 0 0 rgba(255,255,255,.35),
+    inset -1px 0 0 rgba(20,18,12,.04),
+    0 14px 36px -14px rgba(20,18,12,.28),
+    0 3px 10px -4px rgba(20,18,12,.10);
+  position: relative;
+  isolation: isolate;
+}
+.pay-balance-bar { background: linear-gradient(180deg, color-mix(in srgb, var(--text) 88%, transparent), color-mix(in srgb, var(--text) 80%, transparent)); color: var(--bg); border-color: rgba(255,255,255,.12); }
+.modal { background: linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 90%, transparent), color-mix(in srgb, var(--bg-elev) 82%, transparent)); }
+.sidebar, .subnav, .tabs-wrap { background: linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 46%, transparent), color-mix(in srgb, var(--bg-elev) 30%, transparent)); }
+.subnav-item.on { background: color-mix(in srgb, var(--bg-elev) 92%, transparent); }
+
+/* 邊緣反光：沿邊緣一圈會轉向的亮線（用 mask 只留 1.2px 的邊） */
+.sidebar::before, .subnav::before, .tabs-wrap::before, .modal::before, .pay-overview::before,
+.cashflow-panel::before, .finance-table::before, .pay-group::before, .save-indicator::before {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: -1;
+  padding: 1.2px;
+  background: conic-gradient(from 210deg at 50% 50%,
+    rgba(255,255,255,.95) 0deg, rgba(255,255,255,.22) 70deg, rgba(255,255,255,.05) 140deg,
+    rgba(255,255,255,.5) 200deg, rgba(255,255,255,.10) 260deg, rgba(255,255,255,.95) 360deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+}
+/* 滑鼠高光：跟著游標的柔光（.card::after 原本是固定斜角高光，改成動態） */
+.card:not(.has-cover)::after,
+.sidebar::after, .subnav::after, .tabs-wrap::after, .modal::after, .pay-overview::after,
+.cashflow-panel::after, .finance-table::after, .pay-group::after, .save-indicator::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: -1;
+  background: radial-gradient(280px 200px at var(--mx, 25%) var(--my, 0%), rgba(255,255,255,.30), rgba(255,255,255,0) 70%);
+  transition: opacity .3s;
+}
+/* 偽元素放到容器自己那層的最底（容器都有 isolation:isolate），不碰子元素——
+   2026-09-07 曾用 `> * { position:relative }` 把 .tabs-wrap 裡藏起來的下拉選單拉出來平鋪 */
+
+/* 小元件：ghost 按鈕、分頁觸發、詳細資訊、動作鈕 */
+.btn.btn-ghost, .tabs-trigger, .card-meta-toggle, .card-action {
+  background: color-mix(in srgb, var(--bg-elev) 40%, transparent);
+  border-color: color-mix(in srgb, #fff 45%, var(--border));
+  -webkit-backdrop-filter: blur(16px) saturate(1.5) brightness(1.05);
+  backdrop-filter: blur(16px) saturate(1.5) brightness(1.05);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7), 0 2px 8px -2px rgba(20,18,12,.12);
+}
+.btn.btn-ghost:hover, .tabs-trigger:hover, .card-meta-toggle:hover, .card-action:hover { background: color-mix(in srgb, var(--bg-elev) 70%, transparent); }
+
+/* 深色模式：玻璃薄膜變暗、反光變淡 */
+[data-theme="dark"] .card:not(.has-cover),
+[data-theme="dark"] .sidebar, [data-theme="dark"] .subnav, [data-theme="dark"] .tabs-wrap,
+[data-theme="dark"] .pay-overview, [data-theme="dark"] .cashflow-panel, [data-theme="dark"] .finance-table,
+[data-theme="dark"] .pay-group, [data-theme="dark"] .save-indicator {
+  background: linear-gradient(180deg, rgba(255,255,255,.10), rgba(255,255,255,.05));
+  border-color: rgba(255,255,255,.14);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.18), inset 0 -1px 0 rgba(0,0,0,.45), 0 14px 36px -14px rgba(0,0,0,.6);
+}
+[data-theme="dark"] .modal { background: linear-gradient(180deg, rgba(40,37,32,.88), rgba(28,26,23,.82)); border-color: rgba(255,255,255,.14); }
+[data-theme="dark"] .sidebar::before, [data-theme="dark"] .subnav::before, [data-theme="dark"] .tabs-wrap::before, [data-theme="dark"] .modal::before,
+[data-theme="dark"] .pay-overview::before, [data-theme="dark"] .cashflow-panel::before, [data-theme="dark"] .finance-table::before,
+[data-theme="dark"] .pay-group::before, [data-theme="dark"] .save-indicator::before { opacity: .45; }
+[data-theme="dark"] .card:not(.has-cover)::after, [data-theme="dark"] .sidebar::after, [data-theme="dark"] .subnav::after, [data-theme="dark"] .tabs-wrap::after,
+[data-theme="dark"] .modal::after, [data-theme="dark"] .pay-overview::after, [data-theme="dark"] .cashflow-panel::after,
+[data-theme="dark"] .finance-table::after, [data-theme="dark"] .pay-group::after, [data-theme="dark"] .save-indicator::after {
+  background: radial-gradient(280px 200px at var(--mx, 25%) var(--my, 0%), rgba(255,255,255,.12), rgba(255,255,255,0) 70%);
+}
+[data-theme="dark"] .btn.btn-ghost, [data-theme="dark"] .tabs-trigger, [data-theme="dark"] .card-meta-toggle, [data-theme="dark"] .card-action {
+  background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.14); box-shadow: inset 0 1px 0 rgba(255,255,255,.12);
+}
+
+/* ============================================================
+   卡片版面第三版：標題左上（電影感字體）、階段標籤與把手下移到進度條旁
+   進度條本身是亮玻璃；標籤不墊玻璃、只加薄陰影；卡片加邊緣反光
+   ============================================================ */
+/* 邊緣反光（獨立元素，避開 .card.has-color::before 的左側色條） */
+.card-rim {
+  position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 2;
+  padding: 1.2px;
+  background: conic-gradient(from 210deg at 50% 50%,
+    rgba(255,255,255,.95) 0deg, rgba(255,255,255,.25) 70deg, rgba(255,255,255,.06) 140deg,
+    rgba(255,255,255,.55) 200deg, rgba(255,255,255,.12) 260deg, rgba(255,255,255,.95) 360deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+}
+.card.has-cover > .card-rim { position: absolute; z-index: 2; }
+[data-theme="dark"] .card-rim { opacity: .45; }
+
+/* 標題區 */
+.card-row { align-items: flex-start; }
+.card-title-block { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; align-items: flex-start; text-align: left; }
+.card-title-block .project-title {
+  font-family: 'Oswald', 'Noto Sans TC', var(--font-display);
+  font-weight: 600;
+  font-size: 36px;
+  line-height: 1;
+  letter-spacing: .035em;
+  text-transform: uppercase;
+  color: var(--text);
+  text-shadow: 0 1px 0 rgba(255,255,255,.6);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+}
+.card.dense .card-title-block .project-title { font-size: 28px; }
+.card-title-block .client-name { font-size: 13px; color: var(--text-2); letter-spacing: .02em; }
+.card-title-block .client-name::before { content: none; }
+/* 劇照上的標題：白字＋厚度（雙層陰影＋微漸層），不墊玻璃，讓中間的畫面露出來 */
+.card.has-cover .card-title-block .project-title {
+  color: #fff;
+  background: linear-gradient(180deg, #ffffff 0%, #f3ead9 70%, #e6d7bd 100%);
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 1px 0 rgba(0,0,0,.35)) drop-shadow(0 3px 0 rgba(0,0,0,.18)) drop-shadow(0 10px 24px rgba(0,0,0,.45));
+  text-shadow: none;
+  font-size: 40px;
+}
+.card.has-cover .card-title-block .client-name { color: rgba(255,255,255,.88); text-shadow: 0 1px 2px rgba(0,0,0,.5), 0 2px 10px rgba(0,0,0,.35); }
+.card.has-cover .card-row { padding: 22px 28px 12px; min-height: 108px; }
+
+/* 進度條那一列：把手＋階段標籤在左，進度條佔滿剩下的寬度 */
+.card-stage-row { display: flex; align-items: flex-start; gap: 14px; padding: 0 28px 22px; }
+.card.dense .card-stage-row { padding: 0 22px 18px; }
+.card-stage-row .stage-bar.variant-bar { flex: 1; min-width: 0; padding: 0; }
+.card-stage-row .stage-bar.variant-blocks, .card-stage-row .stage-bar.variant-dots { flex: 1; min-width: 0; padding: 0; }
+.stage-lead { display: flex; align-items: center; gap: 10px; flex: none; height: 16px; }   /* 高度＝track，跟長條對齊 */
+.card.has-cover .stage-lead { height: 18px; }
+.stage-lead .drag-handle { margin: 0; }
+
+/* 進度條＝亮玻璃本體：不再有托盤 */
+.card.has-cover .stage-bar.variant-bar .stage-track {
+  padding: 0; height: 18px;
+  background: transparent; border: none; box-shadow: none;
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+.card.has-cover .stage-bar.variant-bar .stage-track .segment {
+  background: rgba(255,255,255,.22);
+  border: 1px solid rgba(255,255,255,.35);
+  -webkit-backdrop-filter: blur(6px) saturate(1.3) brightness(1.1);
+  backdrop-filter: blur(6px) saturate(1.3) brightness(1.1);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.55), inset 0 -1px 0 rgba(0,0,0,.12), 0 2px 8px rgba(0,0,0,.18);
+}
+.card.has-cover .stage-bar.variant-bar .stage-track .segment.status-active { background: rgba(251, 191, 36, .42); border-color: rgba(255, 236, 170, .6); }
+/* 填色：透明感的翠綠玻璃，有頂端反光 */
+.stage-bar.variant-bar .seg-fill {
+  background: linear-gradient(180deg, rgba(110,231,183,.98) 0%, rgba(16,185,129,.92) 55%, rgba(5,150,105,.95) 100%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7), inset 0 -1px 0 rgba(0,0,0,.15), 2px 0 10px rgba(16,185,129,.55);
+}
+.card.has-cover .stage-bar.variant-bar .seg-fill { background: linear-gradient(180deg, rgba(150,240,200,.92) 0%, rgba(52,211,153,.82) 55%, rgba(16,185,129,.88) 100%); }
+
+/* 標籤：不墊玻璃，白字＋薄陰影 */
+.card.has-cover .stage-bar.variant-bar .stage-labels {
+  background: none; border: none; box-shadow: none; padding: 2px 0 0;
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+.card.has-cover .stage-bar.variant-bar .seg-name { color: rgba(255,255,255,.78); text-shadow: 0 1px 2px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.35); }
+.card.has-cover .stage-bar.variant-bar .seg-name .seg-pct { color: rgba(255,255,255,.55); }
+.card.has-cover .stage-bar.variant-bar .seg-name.status-active { color: #fff; }
+.card.has-cover .stage-bar.variant-bar .seg-name.status-active .seg-pct { color: #fde68a; }
+.card.has-cover .stage-bar.variant-bar .seg-name.status-done { color: #a7f3d0; }
+.card.has-cover .stage-bar.variant-bar .seg-name.status-done .seg-pct { color: #a7f3d0; }
+/* 沒劇照的卡：標籤同樣不墊東西 */
+.stage-bar.variant-bar .stage-labels { background: none; }
+
+@media (max-width: 640px) {
+  .card-title-block .project-title { font-size: 26px; }
+  .card.has-cover .card-title-block .project-title { font-size: 28px; }
+  .card-stage-row { padding: 0 16px 16px; gap: 10px; }
+}
+
+/* ---------- 深色模式對比修正（2026-09-07 使用者：有些東西深色看不到） ---------- */
+[data-theme="dark"] .completion .track { stroke: rgba(255,255,255,.18); }
+[data-theme="dark"] .stage-bar.variant-bar .seg-name { color: var(--text-2); }
+[data-theme="dark"] .stage-bar.variant-bar .seg-name .seg-pct { color: var(--text-3); }
+[data-theme="dark"] .stage-bar.variant-bar .seg-name.status-active { color: var(--text); }
+[data-theme="dark"] .countdown-label { color: var(--text-2); }
+[data-theme="dark"] .card-title-block .project-title { text-shadow: 0 1px 0 rgba(0,0,0,.55); }
+/* 劇照卡片上的亮玻璃：背景是圖片不是主題色，深色模式也要一樣亮，否則深色字看不見 */
+[data-theme="dark"] .card.has-cover .stage-tag,
+[data-theme="dark"] .card.has-cover .card-right,
+[data-theme="dark"] .card.has-cover .card-meta-toggle,
+[data-theme="dark"] .card.has-cover .card-meta {
+  background: rgba(255, 255, 255, 0.50);
+  border-color: rgba(255, 255, 255, 0.6);
+  -webkit-backdrop-filter: blur(28px) saturate(1.4) brightness(1.3);
+  backdrop-filter: blur(28px) saturate(1.4) brightness(1.3);
+  color: #15140f;
+}
+[data-theme="dark"] .card.has-cover .stage-tag { background: rgba(253, 230, 138, 0.85); color: #92400e; }
+[data-theme="dark"] .card.has-cover .card-action { background: rgba(255,255,255,.62); color: #15140f; border-color: rgba(255,255,255,.7); }
+
+/* ============================================================
+   卡片頭部（.card-hero）：劇照只鋪這一塊，面板展開時框不變、圖不縮放
+   面板打開時頭部黏在畫面上方，只露出進度條那一列
+   ============================================================ */
+.card { overflow: hidden; overflow: clip; }     /* clip 不是 scroll container，sticky 才會動；不支援 clip 的瀏覽器退回 hidden */
+.card-hero { position: relative; }
+.card-hero > .card-cover { position: absolute; inset: 0; z-index: 0; }
+.card-hero > *:not(.card-cover) { position: relative; z-index: 1; }
+/* 頭部（含圖）與面板之間：面板區用一般卡片玻璃 */
+.card.has-cover {
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--bg-elev) 62%, transparent),
+    color-mix(in srgb, var(--bg-elev) 46%, transparent));
+  -webkit-backdrop-filter: blur(26px) saturate(1.7);
+  backdrop-filter: blur(26px) saturate(1.7);
+}
+[data-theme="dark"] .card.has-cover { background: linear-gradient(180deg, rgba(255,255,255,.10), rgba(255,255,255,.05)); }
+.card.has-cover .card-hero { min-height: 120px; }
+/* 面板打開：圖稍微模糊、壓暗一點，把注意力讓給面板 */
+.card.panel-open .card-cover { filter: blur(4px) brightness(.92); }
+.card.has-cover .card-cover { transition: transform 0.6s cubic-bezier(0.22, 1, 0.36, 1), filter 0.35s ease; }
+/* 展開的面板不再需要外距（頭部已有邊界），只留左右內縮 */
+.card.has-cover .detail-panel, .card.has-cover .info-panel, .card.has-cover .cost-panel { margin: 12px 16px 16px; }
+
+/* 黏住：頭部往上捲到只剩進度條那一列時停住 */
+.card.panel-open .card-hero {
+  position: sticky;
+  top: calc(var(--stage-h, 64px) - var(--hero-h, 236px) + 8px);
+  z-index: 6;
+}
+/* 沒劇照的卡：頭部黏住時要有底，否則細項會從進度條後面透出來 */
+.card.panel-open:not(.has-cover) .card-hero {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 88%, transparent), color-mix(in srgb, var(--bg-elev) 80%, transparent));
+  -webkit-backdrop-filter: blur(18px) saturate(1.5);
+  backdrop-filter: blur(18px) saturate(1.5);
+  box-shadow: 0 8px 20px -12px rgba(20,18,12,.25);
+}
+[data-theme="dark"] .card.panel-open:not(.has-cover) .card-hero { background: linear-gradient(180deg, rgba(32,30,27,.92), rgba(28,26,23,.86)); }
+.card.panel-open.has-cover .card-hero { box-shadow: 0 8px 20px -12px rgba(0,0,0,.45); }
+@media (prefers-reduced-motion: reduce) { .card.has-cover .card-cover { transition: none; } }
+
+/* ---------- 實際工作區間（決策 28） ---------- */
+.toggle-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); cursor: pointer; margin: 4px 0 8px; }
+.toggle-row input { width: 16px; height: 16px; accent-color: var(--text); }
+.period-list { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-sunken); }
+.period-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.period-idx { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .06em; color: var(--text-3); min-width: 42px; }
+.period-arrow { color: var(--text-4); }
+.period-hint { font-size: 11.5px; color: var(--text-3); }
+.period-row .delete-item { margin-left: auto; }
+.period-row .delete-item:disabled { opacity: .3; cursor: default; }
+.seg-badge {
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: .06em;
+  padding: 2px 7px; border-radius: 999px;
+  border: 1px dashed var(--border-strong); color: var(--text-3); background: var(--bg-sunken);
+  white-space: nowrap;
+}
+.card.has-cover .seg-badge { background: rgba(255,255,255,.45); border-color: rgba(255,255,255,.7); color: #3f3b33; backdrop-filter: blur(10px); }
+
+/* 單案財務：分攤固定成本逐月明細 */
+.fixed-by-month { margin-top: 8px; }
+.fbm-list { margin-top: 8px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 12px; }
+.fbm-row { display: grid; grid-template-columns: 56px 80px 1fr auto; gap: 10px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.fbm-row:last-child { border-bottom: none; }
+.fbm-row.alone { background: color-mix(in srgb, var(--stage-active) 10%, transparent); }
+.fbm-row.total { background: var(--bg-sunken); font-weight: 600; }
+.fbm-month { font-family: var(--font-mono); color: var(--text-2); }
+.fbm-days { font-variant-numeric: tabular-nums; color: var(--text-2); }
+.fbm-others { color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fbm-amt { font-variant-numeric: tabular-nums; text-align: right; }
