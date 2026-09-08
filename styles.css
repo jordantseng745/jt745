@@ -6008,3 +6008,196 @@ body::before {
 .fbm-days { font-variant-numeric: tabular-nums; color: var(--text-2); }
 .fbm-others { color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fbm-amt { font-variant-numeric: tabular-nums; text-align: right; }
+
+/* ---------- 儲存燈號：回到左下角、縮小（玻璃通用規則曾把 position:fixed 蓋掉，2026-09-08） ---------- */
+.save-indicator {
+  position: fixed !important;
+  left: 16px;
+  bottom: 14px;
+  top: auto;
+  padding: 5px 10px;
+  gap: 7px;
+  font-size: 11px;
+  max-width: min(300px, calc(100vw - 32px));
+  border-radius: 999px;
+}
+.save-indicator .save-dot { width: 6px; height: 6px; }
+.save-indicator .save-sub { font-size: 10.5px; }
+.save-indicator.is-idle, .save-indicator.is-saved { opacity: 0.72; }
+.save-indicator.is-idle:hover, .save-indicator.is-saved:hover { opacity: 1; }
+.save-indicator .save-action { padding: 2px 9px; font-size: 10.5px; }
+
+/* ---------- 漢堡按鈕：平常隱藏，滑鼠靠近左上角才出現；出現時左緣對齊內容 ---------- */
+.sidebar-toggle {
+  top: 10px;
+  left: max(40px, calc((100vw - 1340px) / 2 + 40px));   /* 跟 .app 的左邊界對齊 */
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 0.2s ease, transform 0.2s ease, background 0.15s ease, box-shadow 0.18s ease;
+}
+/* 比按鈕大一圈的感應區：滑鼠靠近就顯示，不用精準對到那 38px */
+.sidebar-toggle::before {
+  content: '';
+  position: absolute;
+  inset: -28px -60px -28px -40px;
+}
+.sidebar-toggle:hover,
+.sidebar-toggle:focus-visible,
+.app-body.sidebar-open ~ .sidebar-toggle,
+.sidebar-toggle[aria-expanded="true"] {
+  opacity: 1;
+  transform: translateY(0);
+}
+.sidebar-toggle:active { transform: scale(0.96); }
+/* 觸控裝置沒有 hover：一律顯示 */
+@media (hover: none), (max-width: 900px) {
+  .sidebar-toggle { opacity: 1; transform: none; left: 16px; top: 16px; }
+  .sidebar-toggle::before { display: none; }
+}
+
+/* ---------- 導覽按鈕：跟「進行中」同一列，放在內容左邊的邊界溝；兩者平常都隱藏，滑鼠靠近才出現 ---------- */
+.app-body { position: relative; }
+.sidebar-toggle {
+  position: absolute;
+  top: 0;
+  left: -46px;                 /* .app 左右 padding 是 40px，按鈕 36px 剛好坐在那條溝裡 */
+  right: auto;
+  width: 36px;
+  height: 34px;                /* 跟 .tabs-trigger 同高 */
+  border-radius: 9px;
+  z-index: 5;
+  opacity: 0;
+  transform: none;
+}
+/* 感應區往右延伸到蓋住「進行中」，滑鼠靠近那一帶兩者一起出現 */
+.sidebar-toggle::before { inset: -16px -260px -16px -22px; }
+.tabs-wrap { opacity: 0; transition: opacity 0.2s ease; }
+.app-body:has(> .sidebar-toggle:hover) .tabs-wrap,
+.app-body:has(.tabs-wrap:hover) .tabs-wrap,
+.app-body:has(.tabs-wrap:focus-within) .tabs-wrap,
+.app-body.sidebar-open .tabs-wrap { opacity: 1; }
+.app-body:has(.tabs-wrap:hover) > .sidebar-toggle,
+.app-body:has(.tabs-wrap:focus-within) > .sidebar-toggle,
+.app-body.sidebar-open > .sidebar-toggle,
+.sidebar-toggle:hover,
+.sidebar-toggle:focus-visible { opacity: 1; transform: none; }
+.sidebar-toggle:active { transform: scale(0.96); }
+/* 「進行中」本體是圓角，外層不要再套一層方形玻璃框 */
+.tabs-wrap { background: none; border: none; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; border-radius: 9px; }
+.tabs-wrap::before, .tabs-wrap::after { content: none; }
+@media (hover: none), (max-width: 900px) {
+  .sidebar-toggle { position: fixed; top: 16px; left: 16px; opacity: 1; }
+  .sidebar-toggle::before { display: none; }
+  .tabs-wrap { opacity: 1; }
+}
+
+/* ============================================================
+   導覽（第三版）：漢堡在主欄左上、跟每頁第一列同一排；選單是浮在卡片上方的浮層，不推擠內容
+   ============================================================ */
+.app-body { gap: 0 !important; position: relative; }
+.app-main { position: relative; }
+.sidebar-toggle {
+  position: absolute;
+  top: 0; left: 0; right: auto;
+  width: 36px; height: 34px;
+  border-radius: 9px;
+  z-index: 6;
+  opacity: 0;
+  transform: none;
+}
+.sidebar-toggle::before { inset: -12px; }            /* 小一圈的感應區就好，不要蓋到「進行中」 */
+/* 每一頁的第一列讓出 50px 給漢堡 */
+.tabs-row { padding-left: 50px; }
+.finance-toolbar { padding-left: 50px; }
+.payments-page > .subnav { margin-left: 50px; }
+.calendar-toolbar { padding-left: 50px; }
+
+/* 選單：浮層，左緣對齊漢堡，頂端貼齊第一列下緣（34px 列高 + 14px 間距 = 卡片頂端） */
+.sidebar {
+  position: absolute !important;
+  top: 48px; left: 0;
+  width: 200px;
+  z-index: 40;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-6px);
+  padding: 6px;
+  border-left-width: 1px; border-right-width: 1px;
+  overflow: visible;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+.app-body.sidebar-open .sidebar { opacity: 1; pointer-events: auto; transform: none; width: 200px; }
+
+/* 顯示邏輯：滑鼠靠近漢堡或「進行中」→ 兩者一起出現；選單開著 → 保持顯示 */
+.tabs-wrap { opacity: 0; transition: opacity 0.2s ease; }
+.app-main:has(> .sidebar-toggle:hover) .tabs-wrap,
+.app-main:has(.tabs-wrap:hover) .tabs-wrap,
+.app-main:has(.tabs-wrap:focus-within) .tabs-wrap,
+.app-body.sidebar-open .tabs-wrap { opacity: 1; }
+.app-main:has(.tabs-wrap:hover) > .sidebar-toggle,
+.app-main:has(.tabs-wrap:focus-within) > .sidebar-toggle,
+.app-body.sidebar-open .sidebar-toggle,
+.sidebar-toggle:hover,
+.sidebar-toggle:focus-visible { opacity: 1; transform: none; }
+.sidebar-toggle:active { transform: scale(0.96); }
+@media (hover: none), (max-width: 900px) {
+  .sidebar-toggle { position: absolute; top: 0; left: 0; opacity: 1; }
+  .sidebar-toggle::before { display: none; }
+  .tabs-wrap { opacity: 1; }
+}
+/* 導覽選單改成浮層後：關掉舊的進場動畫（它的 keyframe 會把 opacity 鎖成 1，讓關閉狀態也看得到），
+   頂端對齊卡片頂端（第一列 34px + 間距 20px） */
+.sidebar { animation: none !important; top: 54px; }
+/* 主欄不再往右縮 10px（那是側欄還是推擠式時留的）：漢堡、進行中、卡片、浮層選單的左緣才會在同一條線上 */
+.app-main { margin-left: 0 !important; }
+
+/* ============================================================
+   導覽（第四版）：左欄 .nav-col = 三條線 + 選單。關閉時左欄 36px 疊在內容左上角；
+   打開時左欄 200px，內容從左邊縮進去（右緣不動）。三條線位置不變。
+   ============================================================ */
+.nav-col {
+  position: relative;
+  z-index: 6;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;                 /* 34px 按鈕 + 20px = 54px → 選單頂端貼齊卡片頂端 */
+  width: 36px;
+  margin-right: -50px;       /* 關閉時疊在內容上，內容第一列自己讓出 50px */
+  transition: width 0.25s ease, margin-right 0.25s ease;
+}
+.app-body.sidebar-open .nav-col { width: 200px; margin-right: 24px; }
+.sidebar-toggle { position: static !important; top: auto; left: auto; }
+/* 選單回到欄內排版（不再是浮層） */
+.sidebar {
+  position: static !important;
+  top: auto; left: auto;
+  width: 200px;
+  transform: none;
+  pointer-events: auto;
+}
+.app-body.sidebar-closed .sidebar { display: none; }
+.app-body.sidebar-open .sidebar { display: flex; opacity: 1; }
+/* 內容第一列：關閉時讓出 50px 給三條線；打開時三條線在左欄裡，不用讓 */
+.app-body.sidebar-open .tabs-row,
+.app-body.sidebar-open .finance-toolbar,
+.app-body.sidebar-open .calendar-toolbar { padding-left: 0; }
+.app-body.sidebar-open .payments-page > .subnav { margin-left: 0; }
+/* 顯示邏輯不變：靠近三條線或「進行中」一起出現；打開時保持 */
+.app-body:has(.nav-col:hover) .tabs-wrap,
+.app-body:has(.tabs-wrap:hover) .tabs-wrap,
+.app-body:has(.tabs-wrap:focus-within) .tabs-wrap,
+.app-body.sidebar-open .tabs-wrap { opacity: 1; }
+.app-body:has(.tabs-wrap:hover) .sidebar-toggle,
+.app-body:has(.tabs-wrap:focus-within) .sidebar-toggle,
+.app-body.sidebar-open .sidebar-toggle,
+.sidebar-toggle:hover,
+.sidebar-toggle:focus-visible { opacity: 1; }
+@media (hover: none), (max-width: 900px) {
+  .sidebar-toggle { position: static !important; opacity: 1; }
+}
+/* 關閉時左欄要「完全」疊在內容左上角：往右收的量＝自己的寬度（36px），內容左緣才會回到 40px、右緣不動 */
+.nav-col { margin-right: -36px; }
+.app-body.sidebar-open .nav-col { margin-right: 24px; }
+/* 主欄不再置中限寬 1180（那會讓左右各留 10px、跟標題對不齊）：左緣貼齊標題、右緣貼齊頁首 */
+.app-main { max-width: none !important; margin: 0 !important; }

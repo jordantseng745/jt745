@@ -6756,6 +6756,17 @@ function Tracker({ session, onSignOut }) {
   });
   const setTrophyHidden = (v) => { setHideTrophy(v); try { localStorage.setItem(HIDE_TROPHY_KEY, v ? '1' : '0'); } catch (e) {} };
   const [sidebarOpen, setSidebarOpen] = useState(false); // 漢堡按鈕控制
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const onDown = (e) => {
+      if (e.target.closest && (e.target.closest('.sidebar') || e.target.closest('.sidebar-toggle'))) return;
+      setSidebarOpen(false);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') setSidebarOpen(false); };
+    document.addEventListener('pointerdown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('pointerdown', onDown); window.removeEventListener('keydown', onKey); };
+  }, [sidebarOpen]);
 
   // Load projects from Supabase on mount
   useEffect(() => {
@@ -7335,18 +7346,22 @@ function Tracker({ session, onSignOut }) {
         />
       )}
 
-      <button
-        className="sidebar-toggle"
-        onClick={() => setSidebarOpen(o => !o)}
-        title={sidebarOpen ? '關閉導覽' : '開啟導覽'}
-        aria-label="切換導覽"
-      >
-        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-          <path d="M3 6h14M3 10h14M3 14h14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
-        </svg>
-      </button>
 
       <div className={`app-body ${sidebarOpen ? 'sidebar-open' : 'sidebar-closed'}`}>
+        {/* 左欄：三條線在上、導覽選單在下。關閉時左欄只有按鈕那麼寬、疊在內容左上角；
+            打開時左欄變 200px，右邊的內容從左邊縮進去（右緣不動）。三條線本身永遠在同一個位置。 */}
+        <div className="nav-col">
+          <button
+            className="sidebar-toggle"
+            onClick={() => setSidebarOpen(o => !o)}
+            title={sidebarOpen ? '關閉導覽' : '開啟導覽'}
+            aria-label="切換導覽"
+            aria-expanded={sidebarOpen ? 'true' : 'false'}
+          >
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
+              <path d="M3 6h14M3 10h14M3 14h14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+            </svg>
+          </button>
         <Sidebar
           currentPage={currentPage}
           onChange={(p) => { setCurrentPage(p); setSidebarOpen(false); }}
@@ -7358,6 +7373,7 @@ function Tracker({ session, onSignOut }) {
             ) || null,
           }}
         />
+        </div>
 
         <main className="app-main">
           {currentPage === 'projects' && (
@@ -7392,22 +7408,21 @@ function Tracker({ session, onSignOut }) {
                       <span className="sep">·</span>
                     </>
                   )}
-                  {presentation ? (
-                    <span className="presentation-pill" title="簡報模式：金額、淨利、戰績、外包已隱藏。點右上角眼睛關閉">簡報模式</span>
-                  ) : (
+                  {/* 簡報模式：直接不顯示金額，也不放任何字樣（客戶看不出來是刻意藏的）；右上角眼睛鈕反白就是開著 */}
+                  {!presentation && (
                     <>
                       <span>合計金額 <strong>{fmtNT(totalBudget)}</strong></span>
                       <span className="sep">·</span>
                       <span>預估淨利 <strong>{fmtNT(totalProfit)}</strong></span>
+                      <span className="sep">·</span>
                     </>
                   )}
                   {!presentation && hideTrophy && archivedProjects.length > 0 && (
                     <>
-                      <span className="sep">·</span>
                       <button className="link-btn-inline" onClick={() => setTrophyHidden(false)} type="button">顯示戰績</button>
+                      <span className="sep">·</span>
                     </>
                   )}
-                  <span className="sep">·</span>
                   <span style={{ color: urgentCount ? 'var(--warn)' : undefined }}>
                     <strong style={{ color: urgentCount ? 'var(--warn)' : undefined }}>{urgentCount}</strong> 個 14 天內到期
                   </span>
