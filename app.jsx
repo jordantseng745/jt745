@@ -182,10 +182,16 @@ const getPayments = (project) => {
     { id: 'pay-2', label: '尾款',   percentage: 50, dueDate: project.due   || '' },
   ];
 };
+// 收款排程裡「最後一筆」＝預計收款日最晚的那筆（追加款排在陣列最後，但日期可能比尾款早）
+const getFinalPayment = (payments) => {
+  const dated = (payments || []).filter(p => p && p.dueDate);
+  if (dated.length === 0) return payments && payments[payments.length - 1];
+  return dated.reduce((a, b) => (b.dueDate > a.dueDate ? b : a));
+};
 const getOutsourcePayDate = (project) => {
   if (project.outsourcePayDate) return project.outsourcePayDate;
   const payments = getPayments(project);
-  const last = payments[payments.length - 1];
+  const last = getFinalPayment(payments);
   if (!last?.dueDate) return '';
   // 「尾款入帳後 5 天」：尾款已收就用實際入帳日；還沒收就用預計日（逾期未收會被推到明天，外包也跟著往後）
   const base = (typeof getPaymentEffectiveDate === 'function' && getPaymentEffectiveDate(last)) || last.dueDate;
@@ -234,6 +240,36 @@ const getReceivedAmount = (project) => {
   return getPayments(project).filter(isPaymentReceived)
     .reduce((a, p) => a + budget * (Number(p.percentage) || 0) / 100, 0);
 };
+// ---- 追加款項（合約追加）----
+// 款項是「百分比 × 合約金額」算出來的，所以不能只改合約金額——已收的頭款會被放大。
+// 正確做法：合約加上追加額，原本每筆款項的百分比重算讓金額維持不變，再多一列「追加款」。
+// 也記在 budgetAdditions 裡（原始合約存在 baseBudget），之後看得出「原本多少、後來加了多少」。
+function applyBudgetAddition(project, amount, dueDate) {
+  const add = Math.round(Number(amount) || 0);
+  if (add <= 0) return null;
+  const oldBudget = Number(project.budget) || 0;
+  const newBudget = oldBudget + add;
+  const rows = getPayments(project).map(p => ({
+    ...p,
+    percentage: oldBudget > 0 ? (Number(p.percentage) || 0) * oldBudget / newBudget : 0,
+  }));
+  const today = toISODate(TODAY);
+  const d = new Date(today);
+  rows.push({
+    id: uid('pay'),
+    label: `追加款 ${d.getMonth() + 1}/${d.getDate()}`,
+    percentage: add / newBudget * 100,
+    dueDate: dueDate || '',
+    addition: true, addedAt: today, addedAmount: add,
+  });
+  return {
+    budget: newBudget,
+    payments: rows,
+    baseBudget: (project.baseBudget != null ? Number(project.baseBudget) : oldBudget),
+    budgetAdditions: [...(project.budgetAdditions || []), { amount: add, date: today, dueDate: dueDate || '' }],
+  };
+}
+const getAddedBudget = (p) => (p && p.baseBudget != null) ? Math.max(0, (Number(p.budget) || 0) - Number(p.baseBudget)) : 0;
 const isOutsourcePaid = (o) => o?.paid === true;
 const getOutsourcePaidDate = (o) => (o?.paid && o?.paidDate) ? o.paidDate : '';
 // 某筆外包「實際入帳日期」：已付 → 用實際付款日；未付 → 用專案的預估付款日
@@ -900,6 +936,10 @@ function runFinanceAudit() {
   // 注意：單一案子時每個月本來就全額吸收，所以要跟一個同期案子一起算才看得出份額下降
   check('填了實際工作區間（中間停工）→ 與同期案子合算時本案份額下降、延期佔用費為 0', (p) => { p.extendedDue = inFuture(45); p.workPeriods = [{ start: addDays(T, -60), end: addDays(T, -35) }, { start: addDays(T, -5), end: '' }]; },
     { fixedShareWithPeer: 'down', overtime: 'zero', byMonthMatches: (a) => a === true });
+  check('追加款 50,000（預計 40 天後收）→ 合約 +50,000、原頭款金額不變、收入 +50,000、應收多一筆', (p) => {
+    p.payments[0].received = true; p.payments[0].receivedDate = addDays(T, -3);
+    Object.assign(p, applyBudgetAddition(p, 50000, inFuture(40)));
+  }, { income: (a, b) => Math.round(a - b) === 50000, receivableRows: (a, b) => a.split('|').length === b.split('|').length + 1 && a.includes('頭期款:500000'), profit: 'up' });
   check('歸檔（已交件）→ 仍計入現金流與收付款', (p) => { p.archived = true; p.deliveredAt = T; },
     { income: 'same', receivableRows: 'same', payableRows: 'same' });
   check('刪除 → 從現金流與收付款消失', (p) => { p.deleted = true; },
@@ -3147,9 +3187,8 @@ function PaymentSchedule({ project, onUpdate }) {
   const setDate = (id, dueDate) => {
     const next = payments.map(p => p.id === id ? { ...p, dueDate } : p);
     const patch = { payments: next };
-    const idx = payments.findIndex(p => p.id === id);
-    const oldFinal = payments[payments.length - 1];
-    if (idx === payments.length - 1 && oldFinal?.dueDate && dueDate) {
+    const oldFinal = getFinalPayment(payments);
+    if (oldFinal && oldFinal.id === id && oldFinal.dueDate && dueDate) {
       // Outsource date currently in effect (may be derived or explicit)
       const currentOutsource = getOutsourcePayDate(project);
       if (currentOutsource) {
@@ -3195,10 +3234,22 @@ function PaymentSchedule({ project, onUpdate }) {
     onUpdate({ ...project, payments: remaining });
   };
 
+  // 追加款項（合約追加）
+  const [addOpen, setAddOpen] = useState(false);
+  const [addAmt, setAddAmt] = useState('');
+  const [addDue, setAddDue] = useState('');
+  const submitAddition = () => {
+    const patch = applyBudgetAddition(project, addAmt, addDue);
+    if (!patch) { alert('追加金額要大於 0。'); return; }
+    onUpdate({ ...project, ...patch });
+    setAddOpen(false); setAddAmt(''); setAddDue('');
+  };
+
   const outsourcePayDate = getOutsourcePayDate(project);
   const hasOutsources = (project.outsources || []).length > 0;
-  const outsourceOffset = (outsourcePayDate && payments[payments.length - 1]?.dueDate)
-    ? daysBetween(new Date(payments[payments.length - 1].dueDate), new Date(outsourcePayDate))
+  const finalPay = getFinalPayment(payments);
+  const outsourceOffset = (outsourcePayDate && finalPay?.dueDate)
+    ? daysBetween(new Date(finalPay.dueDate), new Date(outsourcePayDate))
     : null;
 
   return (
@@ -3206,9 +3257,25 @@ function PaymentSchedule({ project, onUpdate }) {
       <div className="cost-section-h">
         <div className="cost-block-h">
           <span>收款排程</span>
-          <span className="ghost-pill">合計 {totalPct}%</span>
+          <span className="ghost-pill">合計 {Math.round(totalPct * 10) / 10}%</span>
+          {getAddedBudget(project) > 0 && (
+            <span className="ghost-pill addition">原 {fmtNT(project.baseBudget)} ＋ 追加 {fmtNT(getAddedBudget(project))}</span>
+          )}
         </div>
+        <button type="button" className="btn btn-ghost small" onClick={() => setAddOpen(o => !o)} title="客戶同意追加費用：合約金額加上去、原本款項金額不變、多一列追加款">
+          {addOpen ? '取消追加' : '+ 追加款項'}
+        </button>
       </div>
+      {addOpen && (
+        <div className="addition-form">
+          <span className="addition-label">追加金額（含稅）</span>
+          <MoneyInput value={addAmt} onChange={setAddAmt} />
+          <span className="addition-label">預計收款日</span>
+          <input type="date" className="date-input compact" value={addDue} onChange={e => setAddDue(e.target.value)} />
+          <button type="button" className="btn btn-primary small" onClick={submitAddition}>確認追加</button>
+          <div className="field-hint">合約金額會加上這筆；原本頭款、尾款的<strong>金額不變</strong>（百分比自動重算）；現金流、應收、損益、成本分攤全部跟著更新。</div>
+        </div>
+      )}
 
       <div className="payment-list">
         <div className="payment-row head">
@@ -3220,12 +3287,12 @@ function PaymentSchedule({ project, onUpdate }) {
           <div></div>
         </div>
         {payments.map(p => (
-          <div key={p.id} className={`payment-row ${isPaymentReceived(p) ? 'is-received' : ''}`}>
-            <div className="payment-label">{p.label}</div>
+          <div key={p.id} className={`payment-row ${isPaymentReceived(p) ? 'is-received' : ''} ${p.addition ? 'is-addition' : ''}`}>
+            <div className="payment-label">{p.label}{p.addition && <span className="addition-tag" title={`${p.addedAt} 追加 ${fmtNT(p.addedAmount)}`}>追加</span>}</div>
             <div className="pct-input-wrap">
               <input type="number" className="num-input pct-input"
-                min="0" max="100" step="1"
-                value={p.percentage}
+                min="0" max="100" step="0.5"
+                value={Math.round((Number(p.percentage) || 0) * 10) / 10}
                 onChange={e => setPercentage(p.id, e.target.value)} />
               <span className="pct-sign">%</span>
             </div>
@@ -3264,12 +3331,12 @@ function PaymentSchedule({ project, onUpdate }) {
               : outsourceOffset === 0 ? '＝ 尾款同一天'
               : outsourceOffset > 0 ? `＝ 尾款入帳後 ${outsourceOffset} 天`
               : `＝ 尾款前 ${Math.abs(outsourceOffset)} 天`}
-            {outsourceOffset !== 5 && payments[payments.length - 1]?.dueDate && (
+            {outsourceOffset !== 5 && finalPay?.dueDate && (
               <>
                 {' '}
                 <button
                   className="link-btn-inline"
-                  onClick={() => setOutsourcePayDate(addDays(payments[payments.length - 1].dueDate, 5))}
+                  onClick={() => setOutsourcePayDate(addDays(finalPay.dueDate, 5))}
                   title="重設為「尾款入帳後 5 天」">↺ 改為 +5 天</button>
               </>
             )}
@@ -3336,6 +3403,7 @@ function CostPanel({ project, onUpdate, fixedCostShare, overtimeShare, monthlyFi
           <div className="summary-item">
             <div className="summary-label">合約金額（含稅）</div>
             <div className="summary-value">{fmtNT(project.budget)}</div>
+            {getAddedBudget(project) > 0 && <div className="summary-sub">原 {fmtNT(project.baseBudget)} ＋ 追加 {fmtNT(getAddedBudget(project))}</div>}
           </div>
           {outOpen && (
             <div className="summary-item">
@@ -3515,6 +3583,7 @@ function ProjectFinanceDetail({ project, onUpdate, fixedCostShare, overtimeShare
           <div className="summary-item">
             <div className="summary-label">合約金額（含稅）</div>
             <div className="summary-value">{fmtNT(project.budget)}</div>
+            {getAddedBudget(project) > 0 && <div className="summary-sub">原 {fmtNT(project.baseBudget)} ＋ 追加 {fmtNT(getAddedBudget(project))}</div>}
           </div>
           <div className="summary-item">
             <div className="summary-label">未稅金額</div>
@@ -6843,7 +6912,7 @@ function Tracker({ session, onSignOut }) {
 
   // 玻璃的動態高光：把游標相對位置寫進該塊玻璃的 CSS 變數（--mx / --my）
   useEffect(() => {
-    const SEL = '.card:not(.has-cover), .sidebar, .subnav, .tabs-wrap, .modal, .save-indicator, .pay-overview, .cashflow-panel, .finance-table, .pay-group, .btn.btn-ghost, .card-right, .stage-labels';
+    const SEL = '.card:not(.has-cover), .card-hero, .sidebar, .subnav, .tabs-wrap, .modal, .save-indicator, .pay-overview, .cashflow-panel, .finance-table, .pay-group, .btn.btn-ghost, .sidebar-toggle, .card-right, .stage-labels';
     let raf = 0, ev = null;
     const onMove = (e) => {
       ev = e;

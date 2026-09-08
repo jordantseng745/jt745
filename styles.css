@@ -6201,3 +6201,53 @@ body::before {
 .app-body.sidebar-open .nav-col { margin-right: 24px; }
 /* 主欄不再置中限寬 1180（那會讓左右各留 10px、跟標題對不齊）：左緣貼齊標題、右緣貼齊頁首 */
 .app-main { max-width: none !important; margin: 0 !important; }
+
+/* ---------- 追加款項 ---------- */
+.addition-form { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px; margin: 8px 0 4px; border: 1px dashed var(--border-strong); border-radius: 10px; background: var(--bg-sunken); }
+.addition-form .addition-label { font-size: 12px; color: var(--text-2); }
+.addition-form .field-hint { flex-basis: 100%; }
+.addition-form .money-input, .addition-form input[type="text"] { max-width: 150px; }
+.ghost-pill.addition { color: var(--stage-done); border-color: color-mix(in srgb, var(--stage-done) 45%, var(--border)); }
+.addition-tag { margin-left: 6px; font-family: var(--font-mono); font-size: 10px; letter-spacing: .04em; padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--stage-done) 14%, transparent); color: var(--stage-done); vertical-align: middle; }
+.payment-row.is-addition .payment-label { color: var(--text); }
+.summary-item .summary-sub { margin-top: 3px; font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+
+/* ---------- 收付款頁：第一列跟三條線挨在一起（原本 section 置中限寬、上方多 8px） ---------- */
+.payments-page { max-width: none; margin: 0; padding-top: 0; }
+
+/* ---------- 玻璃補強 ---------- */
+/* 三條線按鈕：跟旁邊的按鈕同一種玻璃 */
+.sidebar-toggle {
+  background: color-mix(in srgb, var(--bg-elev) 40%, transparent);
+  border-color: color-mix(in srgb, #fff 45%, var(--border));
+  -webkit-backdrop-filter: blur(16px) saturate(1.5) brightness(1.05);
+  backdrop-filter: blur(16px) saturate(1.5) brightness(1.05);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7), 0 2px 8px -2px rgba(20,18,12,.12);
+}
+.sidebar-toggle:hover { background: color-mix(in srgb, var(--bg-elev) 70%, transparent); }
+[data-theme="dark"] .sidebar-toggle { background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.14); box-shadow: inset 0 1px 0 rgba(255,255,255,.12); }
+/* 高光範圍放大 */
+.card:not(.has-cover)::after,
+.sidebar::after, .subnav::after, .tabs-wrap::after, .modal::after, .pay-overview::after,
+.cashflow-panel::after, .finance-table::after, .pay-group::after, .save-indicator::after {
+  background: radial-gradient(460px 320px at var(--mx, 25%) var(--my, 0%), rgba(255,255,255,.34), rgba(255,255,255,0) 70%);
+}
+/* 劇照卡片：頭部也有跟著滑鼠的光（像光線掃過玻璃面） */
+.card.has-cover .card-hero::after {
+  content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none; border-radius: inherit;
+  background: radial-gradient(520px 340px at var(--mx, 30%) var(--my, 20%), rgba(255,255,255,.22), rgba(255,255,255,0) 70%);
+  mix-blend-mode: screen;
+}
+/* 劇照上的玻璃件：更厚、邊緣折射 */
+.card.has-cover .card-right,
+.card.has-cover .stage-tag,
+.card.has-cover .card-meta-toggle,
+.card.has-cover .card-meta {
+  -webkit-backdrop-filter: url(#lens) blur(30px) saturate(1.5) brightness(1.2);
+  backdrop-filter: url(#lens) blur(30px) saturate(1.5) brightness(1.2);
+  box-shadow: inset 0 1.5px 0 rgba(255,255,255,.85), inset 0 -1px 0 rgba(0,0,0,.10), 0 10px 26px rgba(0,0,0,.22);
+}
+.card.has-cover .stage-bar.variant-bar .stage-track .segment {
+  -webkit-backdrop-filter: blur(10px) saturate(1.4) brightness(1.12);
+  backdrop-filter: blur(10px) saturate(1.4) brightness(1.12);
+}
