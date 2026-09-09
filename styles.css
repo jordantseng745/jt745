@@ -5962,21 +5962,7 @@ body::before {
 /* 展開的面板不再需要外距（頭部已有邊界），只留左右內縮 */
 .card.has-cover .detail-panel, .card.has-cover .info-panel, .card.has-cover .cost-panel { margin: 12px 16px 16px; }
 
-/* 黏住：頭部往上捲到只剩進度條那一列時停住 */
-.card.panel-open .card-hero {
-  position: sticky;
-  top: calc(var(--stage-h, 64px) - var(--hero-h, 236px) + 8px);
-  z-index: 6;
-}
-/* 沒劇照的卡：頭部黏住時要有底，否則細項會從進度條後面透出來 */
-.card.panel-open:not(.has-cover) .card-hero {
-  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 88%, transparent), color-mix(in srgb, var(--bg-elev) 80%, transparent));
-  -webkit-backdrop-filter: blur(18px) saturate(1.5);
-  backdrop-filter: blur(18px) saturate(1.5);
-  box-shadow: 0 8px 20px -12px rgba(20,18,12,.25);
-}
-[data-theme="dark"] .card.panel-open:not(.has-cover) .card-hero { background: linear-gradient(180deg, rgba(32,30,27,.92), rgba(28,26,23,.86)); }
-.card.panel-open.has-cover .card-hero { box-shadow: 0 8px 20px -12px rgba(0,0,0,.45); }
+/* （2026-09-09 移除「頭部黏在頂端」：使用者說太靠上不好辨識，改成捲過去後在畫面底部浮一塊 .stage-dock） */
 @media (prefers-reduced-motion: reduce) { .card.has-cover .card-cover { transition: none; } }
 
 /* ---------- 實際工作區間（決策 28） ---------- */
@@ -6251,3 +6237,189 @@ body::before {
   -webkit-backdrop-filter: blur(10px) saturate(1.4) brightness(1.12);
   backdrop-filter: blur(10px) saturate(1.4) brightness(1.12);
 }
+
+/* ---------- 資金倒數：固定在畫面上方（往下捲填試算支出時一直看得到）＋ 與「不含試算」的差異 ---------- */
+/* 置頂的存活時間：最重要的一塊，玻璃比其他容器厚（薄膜更不透、模糊更深、邊緣反光更亮），
+   往下捲時才不會跟現金流量表黏在一起（2026-09-09 使用者要求「厚一點」） */
+.runway.sticky {
+  position: sticky;
+  top: 8px;
+  z-index: 20;
+  margin: 0 0 14px;
+  padding: 18px 24px 16px;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas: "label big legend" "label sub legend" "label delta legend";
+  border: 1px solid color-mix(in srgb, #fff 70%, var(--border));
+  border-radius: 16px;
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--bg-elev) 90%, transparent),
+    color-mix(in srgb, var(--bg-elev) 76%, transparent));
+  -webkit-backdrop-filter: url(#lens) blur(36px) saturate(1.9) brightness(1.06);
+  backdrop-filter: url(#lens) blur(36px) saturate(1.9) brightness(1.06);
+  box-shadow:
+    inset 0 2px 0 rgba(255,255,255,.95),
+    inset 0 -1px 0 rgba(20,18,12,.10),
+    inset 1.5px 0 0 rgba(255,255,255,.5),
+    inset -1px 0 0 rgba(20,18,12,.05),
+    inset 0 -18px 30px -24px color-mix(in srgb, var(--tone) 35%, transparent),
+    0 22px 48px -18px rgba(20,18,12,.38),
+    0 6px 16px -6px rgba(20,18,12,.16);
+  isolation: isolate;
+}
+.runway.sticky::before {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: -1;
+  padding: 1.5px;
+  background: conic-gradient(from 210deg at 50% 50%,
+    rgba(255,255,255,1) 0deg, rgba(255,255,255,.3) 70deg, rgba(255,255,255,.08) 140deg,
+    rgba(255,255,255,.6) 200deg, rgba(255,255,255,.14) 260deg, rgba(255,255,255,1) 360deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+}
+.runway.sticky::after {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: -1;
+  background: radial-gradient(320px 220px at var(--mx, 25%) var(--my, 0%), rgba(255,255,255,.42), rgba(255,255,255,0) 70%);
+}
+[data-theme="dark"] .runway.sticky {
+  background: linear-gradient(180deg, rgba(44,41,36,.94), rgba(30,28,25,.86));
+  border-color: rgba(255,255,255,.18);
+  box-shadow: inset 0 1.5px 0 rgba(255,255,255,.22), inset 0 -18px 30px -24px color-mix(in srgb, var(--tone) 40%, transparent), 0 22px 48px -18px rgba(0,0,0,.6);
+}
+[data-theme="dark"] .runway.sticky::after { background: radial-gradient(320px 220px at var(--mx, 25%) var(--my, 0%), rgba(255,255,255,.14), rgba(255,255,255,0) 70%); }
+
+/* 大字「還剩 N 個月 N 天」做成玻璃字：本體是同色系的漸層（頂端透光、底部深），
+   ::after 用同一段文字（data-text）疊一層上白下透明的高光，看起來像光從玻璃上緣打進來 */
+.runway.sticky .runway-big {
+  position: relative;
+  font-size: 34px;
+  /* 2026-09-09 第三版：使用者嫌上半部太亮「有廉價感」——漸層只留一點點（上 88% 純色、下 92%），
+     高光壓到幾乎看不見，靠底下的柔光暈和 1px 白邊撐出「厚度」 */
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--tone) 86%, #fff) 0%,
+    var(--tone) 45%,
+    color-mix(in srgb, var(--tone) 90%, #000) 100%);
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  filter:
+    drop-shadow(0 1px 0 rgba(255,255,255,.55))
+    drop-shadow(0 6px 14px color-mix(in srgb, var(--tone) 26%, transparent));
+}
+.runway.sticky .runway-big::after {
+  content: attr(data-text);
+  position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(180deg, rgba(255,255,255,.16) 0%, rgba(255,255,255,.05) 40%, rgba(255,255,255,0) 55%);
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+[data-theme="dark"] .runway.sticky .runway-big { filter: drop-shadow(0 1px 0 rgba(255,255,255,.18)) drop-shadow(0 8px 18px color-mix(in srgb, var(--tone) 45%, transparent)); }
+
+/* 見底日期：粗體、跟大字同色——使用者要看的就是這個日期 */
+.runway.sticky .runway-sub { font-size: 12.5px; color: var(--text-2); }
+.runway-date { font-weight: 700; color: var(--tone); font-variant-numeric: tabular-nums; font-size: 14px; }
+
+/* 右側顏色說明：三行小字，現在是哪一級就亮起來 */
+.runway-legend {
+  grid-area: legend; align-self: center; justify-self: end;
+  display: flex; flex-direction: column; gap: 3px;
+  padding-left: 18px; margin-left: 6px;
+  border-left: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  font-size: 11.5px; color: var(--text-3); white-space: nowrap;
+}
+.runway-legend-title { font-family: var(--font-mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 2px; }
+.runway-legend-row { display: flex; align-items: center; gap: 7px; opacity: .55; }
+.runway-legend-row i { width: 9px; height: 9px; border-radius: 50%; background: var(--lg); box-shadow: inset 0 1px 0 rgba(255,255,255,.6); }
+.runway-legend-row.lg-blue   { --lg: #2563eb; }
+.runway-legend-row.lg-purple { --lg: #7c3aed; }
+.runway-legend-row.lg-red    { --lg: var(--warn); }
+[data-theme="dark"] .runway-legend-row.lg-blue   { --lg: #60a5fa; }
+[data-theme="dark"] .runway-legend-row.lg-purple { --lg: #a78bfa; }
+.runway-legend-row.on { opacity: 1; color: var(--lg); font-weight: 600; }
+.runway-legend-row.on i { box-shadow: 0 0 0 3px color-mix(in srgb, var(--lg) 22%, transparent), inset 0 1px 0 rgba(255,255,255,.6); }
+
+.runway-delta { grid-area: delta; margin-top: 6px; font-size: 12.5px; color: var(--text-2); }
+.runway-delta strong { color: var(--text); font-variant-numeric: tabular-nums; }
+@media (max-width: 640px) {
+  .runway.sticky { grid-template-columns: 1fr; grid-template-areas: "label" "big" "sub" "delta" "legend"; }
+  .runway-legend { justify-self: start; border-left: 0; padding-left: 0; margin: 8px 0 0; flex-direction: row; gap: 12px; }
+  .runway-legend-title { display: none; }
+}
+
+
+/* 現金流量表整塊面積太大，跟著游標跑的高光效果不好又吃效能——只拿掉這一塊的高光（2026-09-09 使用者要求）。
+   邊緣反光（::before）與玻璃底保留。同時已從 Tracker 的 SEL 選擇器移除，不再寫 --mx/--my */
+.cashflow-panel::after, [data-theme="dark"] .cashflow-panel::after { content: none; }
+
+/* 損益原因：專案 $ 面板大字損益下方、單案財務視窗淨利下方的一行小字（系統自動判斷） */
+.pnl-reason { margin-top: 6px; font-size: 11.5px; line-height: 1.5; color: var(--text-3); }
+.summary-item.big-pnl .pnl-reason { max-width: 300px; margin-left: auto; }
+.pnl-reason b { font-weight: 600; color: var(--text-2); font-variant-numeric: tabular-nums; }
+
+
+/* ============================================================
+   進度條底座 .stage-dock（2026-09-09）：面板打開、原本的進度條捲出畫面時，
+   同一條進度條浮在畫面底部。乾淨的厚玻璃：只有邊緣反光，不做游標高光。
+   置中；寬度最多 920px、兩側各留至少 190px，所以不會碰到左下角的儲存燈號（.save-indicator）。
+   z-index 95：在聚焦遮罩（90）與聚焦卡片（91）之上、視窗（100+）之下。
+   ============================================================ */
+.stage-dock {
+  position: fixed;
+  left: 50%; bottom: 14px;
+  transform: translateX(-50%);
+  width: min(920px, calc(100vw - 380px));   /* 兩側各留 ≥190px，正中央也不會碰到左下角的儲存燈號 */
+  z-index: 95;
+  padding: 12px 18px 12px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, #fff 70%, var(--border));
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--bg-elev) 90%, transparent),
+    color-mix(in srgb, var(--bg-elev) 78%, transparent));
+  -webkit-backdrop-filter: url(#lens) blur(32px) saturate(1.8) brightness(1.05);
+  backdrop-filter: url(#lens) blur(32px) saturate(1.8) brightness(1.05);
+  box-shadow:
+    inset 0 2px 0 rgba(255,255,255,.95),
+    inset 0 -1px 0 rgba(20,18,12,.10),
+    0 22px 48px -18px rgba(20,18,12,.4),
+    0 6px 16px -6px rgba(20,18,12,.16);
+  isolation: isolate;
+  animation: dock-in .28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.stage-dock::before {
+  content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: -1;
+  padding: 1.2px;
+  background: conic-gradient(from 210deg at 50% 50%,
+    rgba(255,255,255,.95) 0deg, rgba(255,255,255,.25) 70deg, rgba(255,255,255,.06) 140deg,
+    rgba(255,255,255,.55) 200deg, rgba(255,255,255,.12) 260deg, rgba(255,255,255,.95) 360deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+}
+@keyframes dock-in { from { opacity: 0; transform: translateX(-50%) translateY(12px); } to { opacity: 1; transform: translateX(-50%); } }
+[data-theme="dark"] .stage-dock {
+  background: linear-gradient(180deg, rgba(44,41,36,.94), rgba(30,28,25,.88));
+  border-color: rgba(255,255,255,.18);
+  box-shadow: inset 0 1.5px 0 rgba(255,255,255,.2), 0 22px 48px -18px rgba(0,0,0,.65);
+}
+.stage-dock-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.stage-dock-title { font-family: var(--font-display); font-weight: 600; font-size: 14px; letter-spacing: .02em; text-transform: uppercase; color: var(--text); }
+.stage-dock-stage { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.stage-dock .stage-bar.variant-bar .seg-name { font-size: 11px; }
+@media (max-width: 760px) {
+  .stage-dock { left: 12px; right: 12px; width: auto; transform: none; bottom: 52px; padding: 10px 14px; animation: none; }
+}
+@media (prefers-reduced-motion: reduce) { .stage-dock { animation: none; } }
+
+/* 進度填色依完成比例換色（2026-09-09 使用者要求）：
+   <50% 紫、50–80% 藍、80–100% 黃、整段完成才綠。每段用變數，玻璃版與劇照版共用 */
+.stage-bar.variant-bar .segment.tier-low  { --fa: #c4b5fd; --fb: #7c3aed; --fc: #5b21b6; --fglow: rgba(124,58,237,.55); }
+.stage-bar.variant-bar .segment.tier-mid  { --fa: #93c5fd; --fb: #2563eb; --fc: #1d4ed8; --fglow: rgba(37,99,235,.55); }
+.stage-bar.variant-bar .segment.tier-high { --fa: #fde68a; --fb: #f59e0b; --fc: #d97706; --fglow: rgba(245,158,11,.6); }
+.stage-bar.variant-bar .segment.tier-low .seg-fill,
+.stage-bar.variant-bar .segment.tier-mid .seg-fill,
+.stage-bar.variant-bar .segment.tier-high .seg-fill,
+.card.has-cover .stage-bar.variant-bar .segment.tier-low .seg-fill,
+.card.has-cover .stage-bar.variant-bar .segment.tier-mid .seg-fill,
+.card.has-cover .stage-bar.variant-bar .segment.tier-high .seg-fill {
+  background: linear-gradient(180deg, var(--fa) 0%, var(--fb) 55%, var(--fc) 100%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.7), inset 0 -1px 0 rgba(0,0,0,.15), 2px 0 10px var(--fglow);
+}
+/* 80–100% 那段填色是黃的，底下「進行中」的琥珀色底會跟填色糊在一起，看不出填到哪——這一級的底色調淡 */
+.stage-bar.variant-bar .stage-track .segment.status-active.tier-high { background: color-mix(in srgb, var(--stage-active) 9%, var(--stage-todo)); }
+.card.has-cover .stage-bar.variant-bar .stage-track .segment.status-active.tier-high { background: rgba(251, 191, 36, .16); }

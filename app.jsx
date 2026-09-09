@@ -576,6 +576,11 @@ async function loadProjects() {
   return (data || []).map(row => ({ ...row.data, id: row.id, _position: row.position }));
 }
 
+// 存活時間（歸零時間）專用：固定支出按天攤，其他事件跟現金流量表完全相同
+function computeRunwaySeries(projects, settings, horizonMonths = 12) {
+  return buildCashflowSeries(projects, settings, horizonMonths, { smoothFixed: true });
+}
+
 // ---------- 儲存狀態總機（Save tracker）----------
 // 所有「寫入資料庫」的函式都會跟這裡報備：開始了 / 成功了 / 失敗了。
 // SaveIndicator 元件訂閱它，在畫面角落即時顯示「儲存中／已儲存／儲存失敗」。
@@ -868,6 +873,8 @@ function runFinanceAudit() {
       fixedOut: -sumBy(series.events, e => e.kind === 'fixed'),
       vatOut: -sumBy(series.events, e => e.kind === 'vat'),
       todayBalance: computeTodayBalance([p], st),
+      // 存活天數：審查用案 12 個月內不會見底，所以用「固定支出 ×1.5」的壓力版來算（約半年後見底），才看得出每筆支出有沒有讓見底日提前
+      runwayDays: (() => { const d = runwayDays(computeRunwaySeries([p], { ...st, monthlyFixedExpense: st.monthlyFixedExpense * 1.5 })); return d == null ? 9999 : d; })(),
       profit: c.profit, netVAT: c.netVAT, outsourceTotal: c.outsourceTotal, fixedCost: c.fixedCost,
       receivableRows: buildReceivableRows([p]).map(r => r.label + ':' + r.amount + ':' + r.bucket + ':' + (r.dueDate || '') + ':' + (r.receivedDate || '')).join('|'),
       payableRows: buildPaymentRows([p]).map(r => r.outsourceName + ':' + r.amount + ':' + r.bucket + ':' + (r.paidDate || r.effDate || '')).join('|'),
@@ -925,8 +932,8 @@ function runFinanceAudit() {
     { netVAT: 'up' });
   check('切成國外案 → 營業稅歸零', (p) => { p.overseas = true; },
     { netVAT: 'zero', vatOut: 'zero' });
-  check('額外支出（已確認）→ 出現 extra 支出事件、今日餘額不變（日期在未來）', (p, st) => { st.extraExpenses = [{ id: 'x', name: '設備', type: 'equipment', amount: 80000, plannedDate: inFuture(10), confirmed: true }]; },
-    { extraOut: 'up', todayBalance: 'same' });
+  check('額外支出（已確認）→ 出現 extra 支出事件、今日餘額不變（日期在未來）、存活天數縮短', (p, st) => { st.extraExpenses = [{ id: 'x', name: '設備', type: 'equipment', amount: 80000, plannedDate: inFuture(10), confirmed: true }]; },
+    { extraOut: 'up', todayBalance: 'same', runwayDays: 'down' });
   check('額外支出（未確認）→ 不影響現金流', (p, st) => { st.extraExpenses = [{ id: 'x', name: '設備', type: 'equipment', amount: 80000, plannedDate: inFuture(10), confirmed: false }]; },
     { extraOut: 'same' });
   check('每月固定支出 +20,000 → 固定支出事件、分攤固定成本、淨利都變', (p, st) => { st.monthlyFixedExpense += 20000; },
@@ -1167,7 +1174,9 @@ function StageBar({ variant, stages, selectedStageId, onClick, onCycle, onInsert
         <div className="stage-track">
           {stages.map((s, i) => {
             const prog = stageProgress(s);
-            const cls = `segment status-${s.status} ${selectedStageId === s.id ? 'selected' : ''} ${prog > 0 && prog < 1 ? 'partial' : ''} ${prog >= 1 ? 'full' : ''}`;
+            // 填色顏色看完成比例：<50% 紫、50–80% 藍、80–100% 黃、全部完成才綠（2026-09-09 使用者要求，一眼看出到哪了）
+            const tier = prog >= 1 ? 'full' : prog >= 0.8 ? 'tier-high' : prog >= 0.5 ? 'tier-mid' : prog > 0 ? 'tier-low' : '';
+            const cls = `segment status-${s.status} ${selectedStageId === s.id ? 'selected' : ''} ${prog > 0 && prog < 1 ? 'partial' : ''} ${tier}`;
             const handleClick = (e) => { if (e.shiftKey) onCycle(s.id); else onClick(s.id); };
             return (
               <React.Fragment key={s.id}>
@@ -1475,25 +1484,29 @@ function AddQtyItemForm({ onAdd }) {
   );
 }
 
+// 子細項的展開／收合是「顯示偏好」，存瀏覽器本機（跟簡報模式一樣），不進資料庫。
+// 只記「有展開的」項目 id；沒記到的一律收合（2026-09-09 使用者：預設全部收起，點開才展開、下次進來也要記得）
+const ITEM_EXPAND_KEY = 'jt745-item-expand';
+function loadItemExpand() { try { return JSON.parse(localStorage.getItem(ITEM_EXPAND_KEY) || '{}') || {}; } catch (e) { return {}; } }
+function saveItemExpand(map) { try { localStorage.setItem(ITEM_EXPAND_KEY, JSON.stringify(map)); } catch (e) {} }
+
 function ChecklistEditor({ stage, onUpdate }) {
   const [draft, setDraft] = useState('');
   const inputRef = useRef(null);
   const [dragOverItemId, setDragOverItemId] = useState(null);
-  // 哪些項目是展開的（顯示子細項）。預設：有 children 的自動展開、沒 children 的收起。
-  // user 顯式 toggle 之後覆蓋預設行為。
-  const [itemExpand, setItemExpand] = useState({});
-  const isExpanded = (it) => {
-    if (it.id in itemExpand) return itemExpand[it.id];
-    return (it.children?.length ?? 0) > 0;
-  };
-  const toggleExpand = (id) => {
-    setItemExpand(prev => {
-      const it = stage.items.find(x => x.id === id);
-      if (!it) return prev;
-      const currentlyExpanded = id in prev ? prev[id] : (it.children?.length ?? 0) > 0;
-      return { ...prev, [id]: !currentlyExpanded };
+  // 哪些項目是展開的（顯示子細項）。預設一律收合；使用者點開的記在本機，重新進來仍保持。
+  const [itemExpand, setItemExpandRaw] = useState(loadItemExpand);
+  const setItemExpand = (updater) => {
+    setItemExpandRaw(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      const compact = {};
+      Object.keys(next).forEach(k => { if (next[k]) compact[k] = true; });
+      saveItemExpand(compact);
+      return compact;
     });
   };
+  const isExpanded = (it) => !!itemExpand[it.id];
+  const toggleExpand = (id) => { setItemExpand(prev => ({ ...prev, [id]: !prev[id] })); };
 
   const setItemStatus = (id, newStatus) => {
     const items = stage.items.map(it => {
@@ -1578,6 +1591,7 @@ function ChecklistEditor({ stage, onUpdate }) {
         ? { ...it, children: [...(it.children || []), { id: uid('i'), text: t, done: false, status: 'todo', start: '', end: '' }] }
         : it),
     });
+    setItemExpand(prev => ({ ...prev, [parentId]: true }));   // 剛加的子細項要看得到
   };
   // 一鍵生成系列到指定父項目
   const generateSeriesForParent = (parentId, prefix, from, to) => {
@@ -2587,11 +2601,55 @@ function calcCosts(project, fixedCostOverride, monthlyFixedExpenseGlobal, overti
   return { days, months, fixedCost, baseFixedCost, overtimeFixed, outsourceTotal, companyOutsource, personalOutsource, salesVAT, creditableInputTax, netVAT, profit, preTax, isOverseas, isSegmented, workSegments };
 }
 
+// ---------- 損益原因（系統自動判斷）----------
+// 回傳最多兩條短句，說明「為什麼賺／為什麼賠」。只看 calcCosts 算出來的比例，規則要讓使用者看得懂：
+//   工期偏長  = 分攤固定成本 ≥ 合約 45%（賠）／ ≤ 30%（賺）
+//   外包偏高  = 外包 ≥ 合約 35%（賠）／ ≤ 20%（賺）
+//   延期加時  = 有延期佔用費
+//   個人外包  = 不能抵稅的外包讓營業稅多繳 ≥ 合約 2%
+//   都不是    = 合約金額本身對成本偏低
+function diagnoseProfit(project, c) {
+  const budget = Number(project.budget) || 0;
+  if (!c || budget <= 0) return [];
+  const pct = (v) => Math.round(v / budget * 100);
+  const fixedShare = c.fixedCost / budget;
+  const outShare = c.outsourceTotal / budget;
+  const nonCreditable = (project.outsources || []).filter(o => !o.taxable).reduce((a, o) => a + (Number(o.amount) || 0), 0);
+  const extraVAT = (!c.isOverseas && nonCreditable > 0) ? Math.min(c.netVAT, nonCreditable * 0.05) : 0;
+  const extDays = (project.extendedDue && project.due && new Date(project.extendedDue) > new Date(project.due))
+    ? daysBetween(new Date(project.due), new Date(project.extendedDue)) : 0;
+  const out = [];
+  if (c.profit < 0) {
+    // 按「吃掉多少錢」排序，最大的先講
+    const causes = [];
+    if (fixedShare >= 0.45) causes.push({ w: c.fixedCost, t: `工期偏長：${c.days} 天分攤了固定成本 ${fmtNT(c.fixedCost)}（合約的 ${pct(c.fixedCost)}%）` });
+    if (c.overtimeFixed > 0) causes.push({ w: c.overtimeFixed, t: `延期加時 ${extDays} 天，多攤 ${fmtNT(c.overtimeFixed)} 固定成本` });
+    if (outShare >= 0.35) causes.push({ w: c.outsourceTotal, t: `外包比例偏高：${fmtNT(c.outsourceTotal)}（合約的 ${pct(c.outsourceTotal)}%）` });
+    if (extraVAT >= budget * 0.02) causes.push({ w: extraVAT, t: `個人外包 ${fmtNT(nonCreditable)} 不能抵稅，營業稅多繳約 ${fmtNT(extraVAT)}` });
+    causes.sort((a, b) => b.w - a.w);
+    causes.slice(0, 2).forEach(x => out.push(x.t));
+    if (out.length === 0) out.push(`合約金額對成本偏低：總成本 ${fmtNT(c.fixedCost + c.outsourceTotal + c.netVAT)}，合約只有 ${fmtNT(budget)}`);
+  } else {
+    if (outShare <= 0.20) out.push(`外包比例低（合約的 ${pct(c.outsourceTotal)}%）`);
+    if (fixedShare <= 0.30) out.push(`工期 ${c.days} 天不算長，固定成本只佔 ${pct(c.fixedCost)}%`);
+    if (c.isOverseas) out.push('國外案免營業稅');
+    if (out.length === 0) out.push(`成本控制在合約的 ${pct(c.fixedCost + c.outsourceTotal + c.netVAT)}%`);
+    // 有賺但被什麼壓掉了：只補一句最大的
+    const drags = [];
+    if (c.overtimeFixed > 0) drags.push({ w: c.overtimeFixed, t: `但延期加時 ${extDays} 天多攤了 ${fmtNT(c.overtimeFixed)}` });
+    if (outShare >= 0.35) drags.push({ w: c.outsourceTotal, t: `但外包佔了合約的 ${pct(c.outsourceTotal)}%，利潤被壓低` });
+    if (fixedShare >= 0.45) drags.push({ w: c.fixedCost, t: `但工期 ${c.days} 天讓固定成本佔到 ${pct(c.fixedCost)}%` });
+    drags.sort((a, b) => b.w - a.w);
+    if (drags.length) { out.splice(1); out.push(drags[0].t); }
+  }
+  return out.slice(0, 2);
+}
+
 // ---------- Cash flow timeline ----------
 // Returns a sorted list of cash events + the running balance at each point.
 // settings: { startDate, bankBalance, monthlyFixedExpense, deductionDay }
 // horizonMonths: how many months forward to project (default 12)
-function buildCashflowSeries(projects, settings, horizonMonths = 12) {
+function buildCashflowSeries(projects, settings, horizonMonths = 12, opts = {}) {
   const start = settings.startDate ? new Date(settings.startDate) : new Date(TODAY);
   start.setHours(0, 0, 0, 0);
   const balance = Number(settings.bankBalance) || 0;
@@ -2603,7 +2661,16 @@ function buildCashflowSeries(projects, settings, horizonMonths = 12) {
   const events = [];
 
   // Monthly fixed expenses across the horizon
-  if (monthlyExp > 0) {
+  // opts.smoothFixed：固定支出改成「每天攤一點」——存活時間用這個算才會連續變化；
+  // 月底一次扣的話，餘額是階梯狀，多一筆幾萬的支出常常不會讓見底日期動（2026-09-09 使用者抓到）。
+  if (monthlyExp > 0 && opts.smoothFixed) {
+    const cursor = new Date(start);
+    while (cursor < end) {
+      const daysInMonth = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0).getDate();
+      events.push({ date: new Date(cursor), amount: -monthlyExp / daysInMonth, label: '固定支出（按日攤）', kind: 'fixed' });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+  } else if (monthlyExp > 0) {
     for (let i = 0; i < horizonMonths; i++) {
       const month = new Date(start.getFullYear(), start.getMonth() + i, 1);
       const lastDay = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
@@ -3425,6 +3492,11 @@ function CostPanel({ project, onUpdate, fixedCostShare, overtimeShare, monthlyFi
               {c.profit < 0 ? `−${fmtNT(Math.abs(c.profit))}` : `${profitPct}%`}
             </div>
             <div className="summary-sub">{c.profit < 0 ? `${profitPct}%` : fmtNT(c.profit)}</div>
+            {diagnoseProfit(project, c).length > 0 && (
+              <div className="pnl-reason" title="系統依固定成本、外包、延期、稅務的比例自動判斷">
+                {diagnoseProfit(project, c).join('・')}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -3596,6 +3668,11 @@ function ProjectFinanceDetail({ project, onUpdate, fixedCostShare, overtimeShare
           <div className={`summary-item profit ${c.profit < 0 ? 'negative' : ''}`}>
             <div className="summary-label">淨利</div>
             <div className="summary-value">{fmtNT(c.profit)} <span className="pct">{profitPct}%</span></div>
+            {diagnoseProfit(project, c).length > 0 && (
+              <div className="pnl-reason" title="系統依固定成本、外包、延期、稅務的比例自動判斷">
+                {diagnoseProfit(project, c).join('・')}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -3791,19 +3868,25 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
     setShowEditModal(true);
   };
   const panelOpen = !!expandedStageId || !!project.infoOpen || !!project.costsOpen;
-  // 面板打開時頭部要黏在畫面上方、只露出進度條那一列：需要知道頭部與進度條列的高度
+  // 面板打開、往下捲到原本的進度條看不見時，在畫面底部浮一塊玻璃底座放同一條進度條
+  // （第一版是把頭部黏在畫面頂端，使用者說太靠上、不好辨識，2026-09-09 改到底部）。
+  // 卡片整個捲過去（底部也離開畫面）就收起來，不然會一直掛在那裡。
+  const [dockBar, setDockBar] = useState(false);
   useEffect(() => {
-    if (!panelOpen) return;
-    const card = cardRef.current, hero = heroRef.current, row = stageRowRef.current;
-    if (!card || !hero || !row || typeof ResizeObserver === 'undefined') return;
-    const apply = () => {
-      card.style.setProperty('--hero-h', hero.offsetHeight + 'px');
-      card.style.setProperty('--stage-h', row.offsetHeight + 'px');
+    if (!panelOpen) { setDockBar(false); return; }
+    let raf = 0;
+    const check = () => {
+      raf = 0;
+      const row = stageRowRef.current, card = cardRef.current;
+      if (!row || !card) return;
+      const r = row.getBoundingClientRect(), c = card.getBoundingClientRect();
+      setDockBar(r.bottom < 0 && c.bottom > 200);
     };
-    apply();
-    const ro = new ResizeObserver(apply);
-    ro.observe(hero); ro.observe(row);
-    return () => ro.disconnect();
+    const onScroll = () => { if (!raf) raf = requestAnimationFrame(check); };
+    check();
+    document.addEventListener('scroll', onScroll, { capture: true, passive: true });
+    window.addEventListener('resize', onScroll);
+    return () => { document.removeEventListener('scroll', onScroll, { capture: true }); window.removeEventListener('resize', onScroll); if (raf) cancelAnimationFrame(raf); };
   }, [panelOpen]);
 
   // 用全域的 projectPct（會處理子細項 + 階段等權重平均）。
@@ -3985,6 +4068,24 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
         />
       </div>
       </div>{/* /card-hero */}
+
+      {dockBar && ReactDOM.createPortal(
+        <div className="stage-dock" role="region" aria-label="進度條">
+          <div className="stage-dock-head">
+            <span className="stage-dock-title">{project.title}</span>
+            <span className="stage-dock-stage">{currentStage.label}・{pct}%</span>
+          </div>
+          <StageBar
+            variant={stageVariant}
+            stages={project.stages}
+            selectedStageId={expandedStageId}
+            onClick={(sid) => onStageClick(sid)}
+            onCycle={(sid) => onCycleStage(project.id, sid)}
+            onInsert={(idx) => onInsertStage(project.id, idx)}
+          />
+        </div>,
+        document.body
+      )}
 
       {expandedStageId && panelStyle === 'inline' && (
         <StageDetail
@@ -4780,26 +4881,60 @@ function CashflowLegend() {
 }
 
 // 「還能撐多久」：從今天到餘額第一次轉負的那天。>6 個月藍、3–6 個月紫、<3 個月紅。
-function RunwayBanner({ series }) {
+// baseline = 同一組資料但「不含已確認的試算支出」算出來的 series。有給的話會顯示差異：
+// 見底日期是跳格的（房租每月一次扣），一筆幾萬的支出常常不會讓日期動，但最低點一定會少——要把這個講出來，
+// 使用者才看得出「有這筆／沒這筆」的差別（2026-09-09 使用者以為算式壞了）。
+function runwayDays(series) {
+  if (!series) return null;
+  if (!(series.goesNegative && series.negativeAt)) return null;
+  return daysBetween(new Date(TODAY), new Date(series.negativeAt.date));
+}
+function RunwayBanner({ series, baseline, extrasTotal = 0, sticky = false }) {
   if (!series) return null;
   const today = new Date(TODAY);
-  let days = null;
-  if (series.goesNegative && series.negativeAt) days = daysBetween(today, new Date(series.negativeAt.date));
+  const days = runwayDays(series);
   const months = days == null ? null : days / 30.44;
   const tone = days == null ? 'blue' : days < 0 ? 'red' : months < 3 ? 'red' : months <= 6 ? 'purple' : 'blue';
   let big, sub;
-  if (days == null) { big = '12 個月內不見底'; sub = `以今天（${fmtDate(today)}）起算，未來 12 個月餘額都在零以上`; }
-  else if (days < 0) { big = '已經見底'; sub = `餘額在 ${fmtDate(new Date(series.negativeAt.date))} 已轉負`; }
+  const dateEl = (dt) => <strong className="runway-date">{fmtDate(new Date(dt))}</strong>;
+  if (days == null) { big = '12 個月內不見底'; sub = <>以今天（{fmtDate(today)}）起算，未來 12 個月餘額都在零以上</>; }
+  else if (days < 0) { big = '已經見底'; sub = <>餘額在 {dateEl(series.negativeAt.date)} 已轉負</>; }
   else {
     const m = Math.floor(months), d = Math.round(days - m * 30.44);
     big = m >= 1 ? `還剩 ${m} 個月${d > 0 ? ` ${d} 天` : ''}` : `還剩 ${days} 天`;
-    sub = `以今天（${fmtDate(today)}）起算，${fmtDate(new Date(series.negativeAt.date))} 見底`;
+    sub = <>以今天（{fmtDate(today)}）起算，{dateEl(series.negativeAt.date)} 見底・固定支出按天平均攤計</>;
+  }
+  // 跟「不含試算支出」比
+  let delta = null;
+  if (baseline && extrasTotal > 0) {
+    const d0 = runwayDays(baseline), d1 = days;
+    const minDrop = Math.round(baseline.minBalance - series.minBalance);
+    let dateText;
+    if (d0 == null && d1 == null) dateText = '見底日期不變（都在 12 個月外）';
+    else if (d0 == null && d1 != null) dateText = `原本 12 個月內不見底 → 現在 ${fmtDate(new Date(series.negativeAt.date))} 見底`;
+    else if (d0 != null && d1 == null) dateText = '見底日期消失';
+    else if (d0 === d1) dateText = '見底日期不變（房租每月扣一次，差額還不到一格）';
+    else dateText = `見底提早 ${d0 - d1} 天（${fmtDate(new Date(baseline.negativeAt.date))} → ${fmtDate(new Date(series.negativeAt.date))}）`;
+    delta = { minDrop, dateText };
   }
   return (
-    <div className={`runway tone-${tone}`}>
+    <div className={`runway tone-${tone} ${sticky ? 'sticky' : ''}`}>
       <div className="runway-label">資金還能撐</div>
-      <div className="runway-big">{big}</div>
+      <div className="runway-big" data-text={big}>{big}</div>
       <div className="runway-sub">{sub}</div>
+      {sticky && (
+        <div className="runway-legend" aria-label="顏色說明">
+          <div className="runway-legend-title">顏色代表剩多久</div>
+          <div className={`runway-legend-row lg-blue ${tone === 'blue' ? 'on' : ''}`}><i />6 個月以上</div>
+          <div className={`runway-legend-row lg-purple ${tone === 'purple' ? 'on' : ''}`}><i />3 到 6 個月</div>
+          <div className={`runway-legend-row lg-red ${tone === 'red' ? 'on' : ''}`}><i />3 個月以內</div>
+        </div>
+      )}
+      {delta && (
+        <div className="runway-delta">
+          已確認的試算支出 <strong>{fmtNT(extrasTotal)}</strong>：最低點少 <strong>{fmtNT(delta.minDrop)}</strong>・{delta.dateText}
+        </div>
+      )}
     </div>
   );
 }
@@ -4850,7 +4985,6 @@ function CashflowPanel({ series, hasSettings, onOpenSettings, defaultOpen = fals
             </div>
           ) : (
             <>
-              <RunwayBanner series={series} />
               <div className="cashflow-tabs">
                 <button className={viewMode === 'overview' ? 'on' : ''} onClick={() => setViewMode('overview')}>總覽</button>
                 <button className={viewMode === 'income' ? 'on' : ''} onClick={() => setViewMode('income')}>收入</button>
@@ -4975,7 +5109,8 @@ function VatOverviewSection({ vatPeriods }) {
 }
 
 // ---------- Extra expense list (planned outflow simulator) ----------
-function ExtraExpenseList({ series, expenses, customCategories, onChange, onUpdateCustomCategories }) {
+function ExtraExpenseList({ series: chartSeries, runwaySeries, expenses, customCategories, onChange, onUpdateCustomCategories }) {
+  const series = runwaySeries || chartSeries;   // 歸零時間用按日攤的版本，跟上方倒數一致
   const list = expenses || [];
   const customs = customCategories || [];
   const allCategories = [...DEFAULT_EXPENSE_CATEGORIES, ...customs];
@@ -5032,6 +5167,7 @@ function ExtraExpenseList({ series, expenses, customCategories, onChange, onUpda
       <div className="runway-banner warn">
         <span className="runway-icon">⚠</span>
         <span>金錢歸零時間：<strong>{fmtChineseDate(series.negativeAt.date)}</strong></span>
+        <span className="muted" style={{ fontSize: 12, marginLeft: 8 }}>（固定支出按天平均攤計，每一筆支出都會反映）</span>
         <span className="runway-sub">（包含已確認的試算項目）</span>
       </div>
     );
@@ -6452,6 +6588,17 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
     () => hasSettings ? buildCashflowSeries(projects, settings, 12) : null,
     [projects, settings, hasSettings]
   );
+  // 不含已確認試算支出的基準線：用來在倒數區顯示「這些支出讓最低點少多少、見底提早幾天」
+  const confirmedExtrasTotal = (settings.extraExpenses || []).filter(x => x.confirmed).reduce((a, x) => a + (Number(x.amount) || 0), 0);
+  // 存活時間用「固定支出按日攤」的版本（連續變化），圖表本身維持真實的月扣款
+  const runwaySeries = useMemo(
+    () => hasSettings ? computeRunwaySeries(projects, settings, 12) : null,
+    [projects, settings, hasSettings]
+  );
+  const runwayNoExtras = useMemo(
+    () => (hasSettings && confirmedExtrasTotal > 0) ? computeRunwaySeries(projects, { ...settings, extraExpenses: [] }, 12) : null,
+    [projects, settings, hasSettings, confirmedExtrasTotal]
+  );
   const [summaryOpen, setSummaryOpen] = useState(true);
   // 子分頁：每次點進財務預設是現金流量表；其他報表要看才點，不再全部疊在同一條捲軸上
   const [sub, setSub] = useState(initialDetailId ? 'pnl' : 'cashflow'); // cashflow | pnl | fixed | vat | whatif
@@ -6511,6 +6658,9 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
 
       {sub === 'cashflow' && (
         <>
+          {hasSettings && series && (
+            <RunwayBanner series={runwaySeries} baseline={runwayNoExtras} extrasTotal={confirmedExtrasTotal} sticky={true} />
+          )}
           <CashflowPanel
             series={series}
             hasSettings={hasSettings}
@@ -6520,6 +6670,7 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
           {/* 試算面板也放在圖下面：打額外支出時圖立刻變，不用來回切分頁 */}
           <ExtraExpenseList
             series={series}
+            runwaySeries={runwaySeries}
             expenses={settings.extraExpenses || []}
             customCategories={settings.customExpenseCategories || []}
             onChange={onUpdateExtraExpenses}
@@ -6599,6 +6750,7 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
       {sub === 'whatif' && (
         <ExtraExpenseList
           series={series}
+          runwaySeries={runwaySeries}
           expenses={settings.extraExpenses || []}
           customCategories={settings.customExpenseCategories || []}
           onChange={onUpdateExtraExpenses}
@@ -6912,7 +7064,8 @@ function Tracker({ session, onSignOut }) {
 
   // 玻璃的動態高光：把游標相對位置寫進該塊玻璃的 CSS 變數（--mx / --my）
   useEffect(() => {
-    const SEL = '.card:not(.has-cover), .card-hero, .sidebar, .subnav, .tabs-wrap, .modal, .save-indicator, .pay-overview, .cashflow-panel, .finance-table, .pay-group, .btn.btn-ghost, .sidebar-toggle, .card-right, .stage-labels';
+    // .cashflow-panel 刻意不在裡面：整塊太大，高光效果差又吃效能（2026-09-09）
+    const SEL = '.card:not(.has-cover), .card-hero, .sidebar, .subnav, .tabs-wrap, .modal, .save-indicator, .pay-overview, .finance-table, .pay-group, .btn.btn-ghost, .sidebar-toggle, .card-right, .stage-labels, .runway.sticky';
     let raf = 0, ev = null;
     const onMove = (e) => {
       ev = e;
