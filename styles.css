@@ -1,5 +1,7 @@
 /* ---------- Tokens ---------- */
 :root {
+  --invest: #4f6d8a;            /* Mission X「投入」：藍灰，不用紅字（不是虧損） */
+  --invest-soft: rgba(79,109,138,.12);
   --bg: #faf9f7;
   --bg-elev: #ffffff;
   --bg-sunken: #f3f1ed;
@@ -35,6 +37,8 @@
 }
 
 [data-theme="dark"] {
+  --invest: #9fb6cc;
+  --invest-soft: rgba(159,182,204,.14);
   --bg: #131210;
   --bg-elev: #1c1b18;
   --bg-sunken: #0d0c0a;
@@ -6423,3 +6427,312 @@ body::before {
 /* 80–100% 那段填色是黃的，底下「進行中」的琥珀色底會跟填色糊在一起，看不出填到哪——這一級的底色調淡 */
 .stage-bar.variant-bar .stage-track .segment.status-active.tier-high { background: color-mix(in srgb, var(--stage-active) 9%, var(--stage-todo)); }
 .card.has-cover .stage-bar.variant-bar .stage-track .segment.status-active.tier-high { background: rgba(251, 191, 36, .16); }
+
+
+/* ===== Mission X（2026-11-03）===== */
+.self-pill {
+  display: inline-block; margin-right: 8px; padding: 1px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; letter-spacing: .04em; vertical-align: 1px;
+  color: var(--invest); background: var(--invest-soft); border: 1px solid color-mix(in srgb, var(--invest) 35%, transparent);
+}
+.card.has-cover .self-pill { color: #1f3347; background: rgba(255,255,255,.72); border-color: rgba(255,255,255,.6); text-shadow: none; }
+.kind-toggle { display: inline-flex; }
+.kind-toggle button { min-width: 96px; }
+.invest-num { color: var(--invest); }
+.self-panel .self-purpose { margin-top: 6px; font-size: 12.5px; color: var(--text-2); }
+.self-panel .summary-item.invest-total { padding-left: 24px; border-left: 1px solid var(--border); }
+.self-panel .summary-item.invest-total .summary-value.big {
+  font-family: var(--font-display); font-size: 34px; font-weight: 700; letter-spacing: -0.03em; line-height: 1;
+  color: var(--invest); font-variant-numeric: tabular-nums;
+}
+.self-panel .summary-item.invest-total { order: 3; }
+.self-rule {
+  margin: 14px 0 4px; padding: 10px 14px; border-radius: 10px;
+  font-size: 12.5px; line-height: 1.6; color: var(--text-2);
+  background: var(--invest-soft);
+}
+.self-months { display: grid; gap: 2px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.self-month {
+  display: grid; grid-template-columns: 76px 56px minmax(0, 1fr) 120px; gap: 10px; align-items: center;
+  padding: 8px 12px; font-size: 12.5px; border-bottom: 1px solid var(--border);
+}
+.self-month:last-child { border-bottom: none; }
+.self-month .sm-label { font-family: var(--font-mono); font-size: 11.5px; }
+.self-month .sm-days { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.self-month .sm-note { color: var(--text-2); min-width: 0; }
+.self-month .sm-amt { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--invest); }
+.self-month.covered .sm-note, .self-month.covered .sm-amt { color: var(--text-3); font-weight: 400; }
+.self-exp-list { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.self-exp-row {
+  display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.2fr) 112px 112px 138px 52px 44px 24px; gap: 10px; align-items: center;
+  padding: 8px 12px; border-bottom: 1px solid var(--border);
+}
+.self-exp-row:last-child { border-bottom: none; }
+.self-exp-row.head {
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text-3); background: var(--bg-sunken);
+}
+.self-exp-row .input { padding: 6px 10px; font-size: 12.5px; min-width: 0; }
+.self-exp-row .num-input { width: 100%; }
+.self-exp-row .center { display: grid; place-items: center; }
+.self-exp-row .delete-item.visible { opacity: 1; color: var(--text-3); }
+.self-exp-row.paid .date-input { color: var(--text-3); }
+@media (min-width: 821px) {
+  .finance-table.self-table .finance-row { grid-template-columns: minmax(0, 1.8fr) 150px 150px 150px; }
+}
+.self-summary { margin-top: 24px; }
+.self-summary .self-rule { margin-top: 12px; }
+@media (max-width: 760px) {
+  .self-exp-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .self-exp-row.head { display: none; }
+  .self-exp-row .center[data-label] { display: flex; justify-content: flex-start; align-items: center; gap: 8px; }
+  .self-exp-row .center[data-label]::before { content: attr(data-label); font-size: 11.5px; color: var(--text-3); }
+  .self-month { grid-template-columns: 70px 48px minmax(0, 1fr); }
+  .self-month .sm-amt { grid-column: 1 / -1; text-align: left; }
+  .self-panel .summary-item.invest-total { padding-left: 0; border-left: none; }
+}
+.self-summary .invest-num, .meta-strip strong.invest-num { color: var(--invest); }
+
+/* ===== 卡片動作按鈕不壓到倒數（2026-11-03）=====
+   右上角的鉛筆／資訊／$／垃圾桶浮現時，卡片頂端往下長出一條 40px 的帶子給按鈕放，
+   倒數天數跟著往下移，不再被蓋住。加在卡片本身（不是 .card-hero），所以劇照的框不變、裁切預覽仍準確。 */
+@media (hover: hover) and (min-width: 821px) {
+  .card:not(.dense) { transition: box-shadow .18s ease, border-color .18s ease, transform .12s ease, opacity .18s ease, padding-top .2s ease; }
+  .card:not(.dense) .card-actions-abs { top: 7px; }
+  .card:not(.dense):hover { padding-top: 40px; }
+}
+/* 觸控裝置與窄螢幕：按鈕一直顯示，那條帶子也一直留著 */
+@media (hover: none), (max-width: 820px) {
+  .card:not(.dense) { padding-top: 40px; }
+  .card:not(.dense) .card-actions-abs { top: 7px; }
+}
+@media (prefers-reduced-motion: reduce) { .card:not(.dense) { transition: none; } }
+
+/* ===== 工作階段之間的「+」（2026-11-03 第二版）=====
+   滑鼠一碰到縫就出現「+」，兩側的階段往外讓出位子；感應區比看得到的縫寬，比較好碰到。
+   下方標籤列同一個縫也一起張開（StageBar 的 openGap），標籤不會跟長條錯位。 */
+.stage-bar.variant-bar .stage-track .insert-gap { flex: 0 0 3px; min-width: 3px; transition: flex-basis .18s ease, min-width .18s ease; }
+.stage-bar.variant-bar .stage-track .insert-gap::before { content: ''; position: absolute; top: -8px; bottom: -8px; left: -6px; right: -6px; }
+.stage-bar.variant-bar .stage-track .insert-gap:hover { flex-basis: 32px; min-width: 32px; }
+.stage-bar.variant-bar .stage-track .insert-plus { width: 24px; height: 24px; flex: none; }
+.stage-bar.variant-bar .label-gap { transition: flex-basis .18s ease; }
+.stage-bar.variant-bar .label-gap.open { flex-basis: 32px; }
+@media (prefers-reduced-motion: reduce) {
+  .stage-bar.variant-bar .stage-track .insert-gap, .stage-bar.variant-bar .label-gap { transition: none; }
+}
+
+/* ===== 主力專案星號（2026-11-03）===== */
+.title-line { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.title-line .project-title { min-width: 0; }
+.star-btn {
+  flex: none; display: inline-grid; place-items: center;
+  width: 30px; height: 30px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: pointer;
+  color: var(--text-3); opacity: 0; transition: opacity .18s ease, transform .18s ease;
+}
+.star-btn svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linejoin: round; transition: fill .2s ease, stroke .2s ease, filter .3s ease; }
+.card:hover .star-btn, .star-btn:focus-visible { opacity: .75; }
+.star-btn:hover { opacity: 1; transform: scale(1.08); }
+.star-btn.on, .card:hover .star-btn.on { opacity: 1; color: #f59e0b; }
+.star-btn.on svg { fill: #fbbf24; stroke: #f59e0b; filter: drop-shadow(0 0 4px rgba(251, 191, 36, .55)); }
+.card.has-cover .star-btn { color: rgba(255,255,255,.85); }
+.card.has-cover .star-btn.on { color: #f59e0b; }
+/* 設為主力的那一下：星星放大、亮光往外擴散一圈 */
+.star-btn.burst svg { animation: star-pop .9s cubic-bezier(.2, .9, .3, 1.3); }
+.star-btn.burst::after {
+  content: ''; position: absolute; width: 30px; height: 30px; border-radius: 50%; pointer-events: none;
+  background: radial-gradient(circle, rgba(253, 224, 71, .75) 0%, rgba(251, 191, 36, .35) 40%, transparent 70%);
+  animation: star-ring .9s ease-out forwards;
+}
+.star-btn { position: relative; }
+@keyframes star-pop {
+  0% { transform: scale(.7); filter: drop-shadow(0 0 0 rgba(251,191,36,0)); }
+  35% { transform: scale(1.35); filter: drop-shadow(0 0 14px rgba(253, 224, 71, .95)); }
+  100% { transform: scale(1); filter: drop-shadow(0 0 4px rgba(251, 191, 36, .55)); }
+}
+@keyframes star-ring { 0% { transform: scale(.4); opacity: 1; } 100% { transform: scale(2.6); opacity: 0; } }
+@media (hover: none) { .star-btn { opacity: .6; } .star-btn.on { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .star-btn.burst svg, .star-btn.burst::after { animation: none; } }
+
+/* ===== 劇照取景：焦點模式（2026-11-03）=====
+   coverFX / coverFY ＝ 圖片的哪一點對準框（background-position），放大也以那一點為中心。
+   框永遠被圖填滿、不會露出空白。卡片與編輯視窗的預覽必須用完全相同的規則（所見即所得）。
+   沒有焦點欄位的舊劇照不加 .focal，照舊用位移畫法。 */
+.card.has-cover .card-cover.focal,
+.cover-crop-img.focal {
+  background-size: cover;
+  background-position: var(--fx, 50%) var(--fy, 50%);
+  transform: scale(calc(var(--cover-zoom, 1) * 1.02));
+  transform-origin: var(--fx, 50%) var(--fy, 50%);
+}
+.card.has-cover:hover .card-cover.focal { transform: scale(calc(var(--cover-zoom, 1) * 1.045)); }
+
+/* ===== 卡片玻璃減量（2026-11-03，使用者：游標那團光暈會卡）=====
+   1. 卡片不用 #lens 邊緣折射（SVG 位移濾鏡是最吃效能的部分），保留一般毛玻璃。其他容器（側欄、視窗…）不變。
+   2. 游標光暈：縮小、變淡，改成一顆固定大小的光用 transform 移動（不重畫漸層）；滑出卡片就淡掉。
+   3. 劇照卡片頭部的光拿掉 mix-blend-mode（混合模式每一格都要重算），劇照上的小玻璃件也拿掉折射。 */
+.card:not(.has-cover) {
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  backdrop-filter: blur(16px) saturate(1.4);
+}
+.card.has-cover {
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  backdrop-filter: blur(16px) saturate(1.4);
+}
+.card.has-cover .card-right,
+.card.has-cover .stage-tag,
+.card.has-cover .card-meta-toggle,
+.card.has-cover .card-meta {
+  -webkit-backdrop-filter: blur(18px) saturate(1.3) brightness(1.15);
+  backdrop-filter: blur(18px) saturate(1.3) brightness(1.15);
+}
+.card:not(.has-cover)::after,
+.card.has-cover .card-hero::after {
+  inset: auto; left: 0; top: 0; width: 320px; height: 240px; border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(255,255,255,.16), rgba(255,255,255,0));
+  transform: translate(calc(var(--mxp, -400px) - 160px), calc(var(--myp, -400px) - 120px));
+  mix-blend-mode: normal;
+  opacity: 0; transition: opacity .3s ease;
+  will-change: transform;
+}
+.card.has-cover .card-hero::after { background: radial-gradient(closest-side, rgba(255,255,255,.12), rgba(255,255,255,0)); }
+.card:not(.has-cover):hover::after,
+.card.has-cover:hover .card-hero::after { opacity: 1; }
+[data-theme="dark"] .card:not(.has-cover)::after { background: radial-gradient(closest-side, rgba(255,255,255,.06), rgba(255,255,255,0)); }
+@media (hover: none) { .card:not(.has-cover)::after, .card.has-cover .card-hero::after { display: none; } }
+
+/* ===== 視窗捲動改由背景層負責（2026-11-03）=====
+   舊版是 .modal 自己捲動：玻璃反光邊框（::before / ::after，inset:0）只有一個視窗高，
+   往下捲時會跟著內容捲走，在視窗中間留下一條圓角框線。改成整個視窗在 .modal-backdrop 裡捲，
+   邊框永遠包住整個視窗。 */
+.modal-backdrop { overflow-y: auto; align-items: start; padding-bottom: max(24px, 4vh); }
+.modal { max-height: none; overflow: visible; }
+@media (max-width: 820px) {
+  .modal { max-height: none; overflow: visible; }
+}
+
+/* ===== 星空聚焦模式（2026-11-03）=====
+   .app.star-mode：開著；.sm-projects：在專案頁；.torch：裝置有滑鼠（用手電筒）。
+   專案頁＋手電筒：夜空畫布（.star-sky）蓋在頁面上面（z 2），主力專案浮在它上方（z 3），
+   畫布在游標處挖洞＝手電筒。其他頁面：夜空在內容後面，不變暗。
+   堆疊前提：卡片到 .app 之間沒有其他層級容器（.app 是唯一的 isolation）——動版面時別破壞這點。 */
+.star-sky { position: fixed; inset: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; opacity: 0; transition: opacity 1.2s ease; }
+.app.star-mode .star-sky { opacity: 1; }
+.app .ambient { transition: opacity 1.2s ease; }
+.app.star-mode .ambient { opacity: 0; }
+.app.star-mode.sm-projects.torch .star-sky { z-index: 2; }
+/* 主力專案：浮在夜空上、金色邊緣微光；背後是一直在動的夜空，不做毛玻璃模糊（省效能），改用深色底 */
+.app.star-mode.sm-projects .card.starred {
+  z-index: 3;
+  border-color: rgba(251, 191, 36, .38);
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, .12), 0 0 46px -6px rgba(251, 191, 36, .28), 0 20px 50px -20px rgba(0, 0, 0, .6);
+  background: linear-gradient(180deg, rgba(16, 17, 24, .9), rgba(10, 11, 18, .86));
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+.app.star-mode.sm-projects .card.starred.focused { z-index: 91; }
+/* 星空按鈕本身要一直找得到 */
+.app.star-mode .star-mode-btn { position: relative; z-index: 3; }
+.star-mode-btn.on { color: #fde68a; border-color: rgba(251, 191, 36, .5); background: rgba(251, 191, 36, .14); }
+.star-mode-btn.on svg { fill: rgba(251, 191, 36, .85); stroke: #f59e0b; }
+/* 星空模式下打開面板：不再多疊一層暗（夜空已經夠暗），但保留「點旁邊關閉」 */
+.app.star-mode .focus-backdrop { background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; }
+/* 觸控裝置（沒有手電筒）：其他專案變暗，點到時亮起 */
+.app.star-mode.sm-projects:not(.torch) .card:not(.starred) { opacity: .35; transition: opacity .45s ease .5s; }
+.app.star-mode.sm-projects:not(.torch) .card:not(.starred):hover { opacity: 1; transition: opacity .15s ease; }
+/* 頂部列的進場動畫原本用 fill-mode both，動畫結束後還留著一個「位移 0」，會讓頂部列自成一層，
+   星空按鈕就浮不到夜空上面。改成 backwards：只在開始前套用，結束後不留東西（看起來完全一樣）。 */
+.topbar { animation-fill-mode: backwards; }
+
+/* ===== 導覽按鈕：液態玻璃圓鈕（2026-11-03）=====
+   使用者：舊版三條線平常完全隱藏，每次都要在附近晃一晃才找得到。
+   現在平常是一顆一直看得到的玻璃圓鈕（四格圖示）；滑鼠碰到它或「進行中」→ 變回原本的三條線方鈕、分頁一起出現；
+   離開後稍等一下（0.25 秒）才變回圓鈕，從按鈕移到「進行中」中間的空隙不會閃。選單打開時維持三條線。 */
+.sidebar-toggle {
+  position: relative !important;   /* 仍在左欄的版面流裡；relative 只是讓反光與感應區以按鈕為準 */
+  opacity: 1;
+  width: 34px; height: 34px;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  overflow: hidden; isolation: isolate;
+  color: var(--text);
+  background:
+    radial-gradient(120% 120% at 30% 18%, rgba(255,255,255,.62), rgba(255,255,255,.16) 46%, rgba(255,255,255,.04) 72%),
+    color-mix(in srgb, var(--bg-elev) 30%, transparent);
+  border: 1px solid rgba(255,255,255,.6);
+  -webkit-backdrop-filter: blur(14px) saturate(1.8) brightness(1.06);
+  backdrop-filter: blur(14px) saturate(1.8) brightness(1.06);
+  box-shadow:
+    inset 0 1px 1px rgba(255,255,255,.95),
+    inset 0 -3px 6px rgba(20,18,12,.10),
+    inset 0 0 0 .5px rgba(255,255,255,.35),
+    0 8px 18px -8px rgba(20,18,12,.35),
+    0 1px 3px rgba(20,18,12,.10);
+  transition: border-radius .25s ease .25s, width .25s ease .25s, background .25s ease .25s, box-shadow .25s ease .25s, transform .12s ease;
+}
+[data-theme="dark"] .sidebar-toggle {
+  color: #f3f1ed;
+  background:
+    radial-gradient(120% 120% at 30% 18%, rgba(255,255,255,.30), rgba(255,255,255,.08) 46%, rgba(255,255,255,.02) 72%),
+    rgba(255,255,255,.05);
+  border-color: rgba(255,255,255,.22);
+  box-shadow:
+    inset 0 1px 1px rgba(255,255,255,.45),
+    inset 0 -3px 6px rgba(0,0,0,.35),
+    inset 0 0 0 .5px rgba(255,255,255,.12),
+    0 8px 20px -8px rgba(0,0,0,.7);
+}
+/* 左上角的小反光，讓它像一顆玻璃珠 */
+.nav-orb-shine {
+  position: absolute; left: 6px; top: 4px; width: 14px; height: 8px; border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(255,255,255,.75), rgba(255,255,255,0));
+  pointer-events: none; z-index: -1; transition: opacity .2s ease .25s;
+}
+[data-theme="dark"] .nav-orb-shine { background: radial-gradient(closest-side, rgba(255,255,255,.4), rgba(255,255,255,0)); }
+.sidebar-toggle svg { grid-area: 1 / 1; transition: opacity .2s ease .25s, transform .25s ease .25s; }
+.sidebar-toggle .ico-burger { opacity: 0; transform: scale(.7) rotate(-30deg); }
+.sidebar-toggle::before { inset: -6px; }
+.sidebar-toggle:hover { transform: scale(1.04); }
+.sidebar-toggle:active { transform: scale(.96); }
+
+/* 碰到之後：變回原本的三條線方鈕 */
+.app-body:has(.nav-col:hover) .sidebar-toggle,
+.app-body:has(.tabs-wrap:hover) .sidebar-toggle,
+.app-body:has(.tabs-wrap:focus-within) .sidebar-toggle,
+.app-body.sidebar-open .sidebar-toggle,
+.sidebar-toggle:focus-visible {
+  width: 36px; border-radius: 9px; transition-delay: 0s;
+}
+.app-body:has(.nav-col:hover) .sidebar-toggle svg,
+.app-body:has(.tabs-wrap:hover) .sidebar-toggle svg,
+.app-body:has(.tabs-wrap:focus-within) .sidebar-toggle svg,
+.app-body.sidebar-open .sidebar-toggle svg,
+.sidebar-toggle:focus-visible svg,
+.app-body:has(.nav-col:hover) .nav-orb-shine,
+.app-body:has(.tabs-wrap:hover) .nav-orb-shine,
+.app-body.sidebar-open .nav-orb-shine { transition-delay: 0s; }
+.app-body:has(.nav-col:hover) .sidebar-toggle .ico-orb,
+.app-body:has(.tabs-wrap:hover) .sidebar-toggle .ico-orb,
+.app-body:has(.tabs-wrap:focus-within) .sidebar-toggle .ico-orb,
+.app-body.sidebar-open .sidebar-toggle .ico-orb,
+.sidebar-toggle:focus-visible .ico-orb { opacity: 0; transform: scale(.6) rotate(30deg); }
+.app-body:has(.nav-col:hover) .sidebar-toggle .ico-burger,
+.app-body:has(.tabs-wrap:hover) .sidebar-toggle .ico-burger,
+.app-body:has(.tabs-wrap:focus-within) .sidebar-toggle .ico-burger,
+.app-body.sidebar-open .sidebar-toggle .ico-burger,
+.sidebar-toggle:focus-visible .ico-burger { opacity: 1; transform: none; }
+.app-body:has(.nav-col:hover) .nav-orb-shine,
+.app-body:has(.tabs-wrap:hover) .nav-orb-shine,
+.app-body.sidebar-open .nav-orb-shine { opacity: 0; }
+/* 「進行中」：離開後也稍等一下才淡出 */
+.tabs-wrap { transition: opacity .2s ease .25s; }
+.app-body:has(.nav-col:hover) .tabs-wrap,
+.app-body:has(.tabs-wrap:hover) .tabs-wrap,
+.app-body.sidebar-open .tabs-wrap { transition-delay: 0s; }
+/* 觸控裝置與窄螢幕：照舊三條線與分頁一直顯示 */
+@media (hover: none), (max-width: 900px) {
+  .sidebar-toggle { width: 36px; border-radius: 9px; }
+  .sidebar-toggle .ico-orb, .nav-orb-shine { opacity: 0; }
+  .sidebar-toggle .ico-burger { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-toggle, .sidebar-toggle svg, .nav-orb-shine, .tabs-wrap { transition: none; }
+}

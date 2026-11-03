@@ -105,6 +105,26 @@ const DEFAULT_STAGES_TPL = [
   },
 ];
 
+// ---- 專案模板（2026-11-03）：新增專案時選。只決定「有哪些工作階段」，跟委託案／Mission X（怎麼算錢）分開選。
+// 停格動畫沿用上面的 DEFAULT_STAGES_TPL（有份量、有預設工作項目）；其他類型先只有階段名稱、每段份量相同、
+// 工作項目留空——等使用者實際做過、找出高度重複的項目再補（使用者 2026-11-03）。
+const evenStages = (labels) => labels.map((label, i) => ({
+  emoji: '', label, items: [], altItems: [],
+  weight: Math.round(100 / labels.length * 10) / 10,
+}));
+const PROJECT_TEMPLATES = [
+  { id: 'animation', label: '停格動畫商案', stages: DEFAULT_STAGES_TPL },
+  { id: 'vlog',      label: 'Cinematic Vlog', stages: evenStages(['企劃選題', '腳本分鏡', '拍攝', '剪輯調色', '音樂音效', '上架發布']) },
+  { id: 'website',   label: '網站',           stages: evenStages(['需求規劃', '架構與內容', '視覺設計', '開發製作', '測試修正', '上線']) },
+  { id: 'course',    label: '課程',           stages: evenStages(['定位與課綱', '教材製作', '錄製或排練', '招生宣傳', '開課', '課後回饋']) },
+  { id: 'talk',      label: '演講',           stages: evenStages(['邀約確認', '主題大綱', '簡報製作', '排練', '現場演講', '會後整理']) },
+  { id: 'product',   label: '產品開發',       stages: evenStages(['概念研究', '設計打樣', '測試修正', '量產準備', '量產', '上市']) },
+  { id: 'sales',     label: '商品銷售',       stages: evenStages(['選品定價', '商品素材', '通路上架', '行銷推廣', '訂單出貨', '售後回饋']) },
+];
+const getProjectTemplate = (id) => PROJECT_TEMPLATES.find(t => t.id === id) || PROJECT_TEMPLATES[0];
+// 舊專案沒有 template 欄位＝停格動畫
+const isAnimationProject = (p) => !p || !p.template || p.template === 'animation';
+
 // Quickly find the template for a stage by its label (so older projects that
 // may use the old label set just don't see template suggestions).
 const findStageTemplate = (stageLabel) => DEFAULT_STAGES_TPL.find(t => t.label === stageLabel);
@@ -174,8 +194,13 @@ const addDays = (d, n) => {
   dt.setDate(dt.getDate() + n);
   return toISODate(dt);
 };
+// Mission X（kind:'self'）：自己發起、沒有客戶付款的案子（vlog、個人品牌、教學網站…）。
+// 規則（使用者 2026-11-03 定案）：有委託案在跑的月份，固定支出由委託案負擔；
+// 只有 Mission X 在做的月份，該月固定支出就是 Mission X 的「投入」。Mission X 有了收入 → 改回委託案，照一般規則。
+const isSelfProject = (p) => !!p && p.kind === 'self';
 // Compute payment schedule with defaults for legacy projects.
 const getPayments = (project) => {
+  if (isSelfProject(project)) return [];   // Mission X 沒有客戶付款
   if (Array.isArray(project.payments) && project.payments.length > 0) return project.payments;
   return [
     { id: 'pay-1', label: '頭期款', percentage: 50, dueDate: project.start || '' },
@@ -197,6 +222,13 @@ const getOutsourcePayDate = (project) => {
   const base = (typeof getPaymentEffectiveDate === 'function' && getPaymentEffectiveDate(last)) || last.dueDate;
   return addDays(base, 5);
 };
+// 單筆支出的預計付款日：Mission X 每筆各有自己的日期（o.payDate）；委託案沿用整案共用的外包付款日（尾款後 5 天）
+const getOutsourceItemPayDate = (project, o) => {
+  if (o && o.payDate) return o.payDate;
+  const shared = getOutsourcePayDate(project);
+  if (shared) return shared;
+  return isSelfProject(project) ? (project.start || '') : '';
+};
 // 外包單筆「已付」狀態 helpers（向下相容：舊資料沒有這兩個欄位）
 // 「已付」= 你已經把錢從銀行轉出去了；「未付」= 還沒付，現金流圖用預估日
 // ---- 客戶收款「已收到」helpers（跟外包 paid/paidDate 同一套模式；舊資料沒欄位＝未收）----
@@ -214,7 +246,7 @@ const getPaymentEffectiveDate = (pay) => {
 // 未付外包同一套：預估付款日已過但還沒付 → 錢還在戶頭，推到明天
 const getOutsourceEffectivePayDate = (project, o) => {
   if (isOutsourcePaid(o)) return o.paidDate || '';
-  const est = getOutsourcePayDate(project);
+  const est = getOutsourceItemPayDate(project, o);
   if (!est) return '';
   const d = new Date(est); d.setHours(0, 0, 0, 0);
   return d < TODAY ? addDays(toISODate(TODAY), 1) : est;
@@ -275,7 +307,7 @@ const getOutsourcePaidDate = (o) => (o?.paid && o?.paidDate) ? o.paidDate : '';
 // 某筆外包「實際入帳日期」：已付 → 用實際付款日；未付 → 用專案的預估付款日
 const getOutsourceEffectiveDate = (project, o) => {
   if (isOutsourcePaid(o) && o.paidDate) return o.paidDate;
-  return getOutsourcePayDate(project);
+  return getOutsourceItemPayDate(project, o);
 };
 // 雙月一期。一筆金流落在的「期」 + 該期繳稅日（下一期第一個月的 5 號）。
 //   5/15 → 5–6 月期，7/5 繳
@@ -552,7 +584,7 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "fontPair": "inter-noto",
   "accentMode": "amber",
   "density": "comfortable",
-  "darkMode": false
+  "darkMode": true
 }/*EDITMODE-END*/;
 
 // ---------- Supabase client + data layer ----------
@@ -919,7 +951,12 @@ function runFinanceAudit() {
     { incomeEvents: (a) => /income-received/.test(a), todayBalance: 'up', receivableRows: 'change' });
   check('頭款預計日已過但未收 → 收入推到明天、不進今日餘額（今日餘額只少了那筆的營業稅：稅照發票日繳）', (p) => { p.payments[0].dueDate = addDays(T, -10); },
     { incomeEvents: (a) => a.includes(inFuture(1) + ':income'),
-      todayBalance: (a, b) => Math.abs((b - a) - (500000 * 0.05 / 1.05)) < 1 });
+      // 那筆的營業稅在繳稅日（下一期第一個月 5 號）才扣；繳稅日還沒到（例如 11/3 檢查 10/24 的款項，11/5 才繳）就還沒扣
+      todayBalance: (a, b) => {
+        const vatDue = vatPeriodInfo(new Date(addDays(T, -10))).dueDate;
+        const expect = vatDue <= TODAY ? 500000 * 0.05 / 1.05 : 0;
+        return Math.abs((b - a) - expect) < 1;
+      } });
   check('已收但實際入帳日早於現金流起算日 → 不重複計入（已在期初餘額裡）', (p, st) => { p.payments[0].received = true; p.payments[0].receivedDate = addDays(T, -120); },
     { income: 'down', todayBalance: 'same' });
   check('外包金額 +50,000 → 支出事件、外包總額、淨利、應付列表都變', (p) => { p.outsources[0].amount += 50000; },
@@ -951,6 +988,75 @@ function runFinanceAudit() {
     { income: 'same', receivableRows: 'same', payableRows: 'same' });
   check('刪除 → 從現金流與收付款消失', (p) => { p.deleted = true; },
     { income: 'zero', receivableRows: (a) => a === '', payableRows: (a) => a === '' });
+
+  // ---- Mission X（2026-11-03）：有委託案的月份由委託案負擔；只有 Mission X 的月份，該月固定支出＝ Mission X 投入 ----
+  const direct = (name, fn) => {
+    let msg = '';
+    try { msg = fn() || ''; } catch (e) { msg = '執行錯誤：' + e.message; }
+    checks.push({ 檢查: name, 通過: msg ? '✗' : '✓', 問題: msg });
+  };
+  const monthFirst = (k) => { const d = new Date(TODAY); return toISODate(new Date(d.getFullYear(), d.getMonth() + k, 1)); };
+  const monthLast  = (k) => { const d = new Date(TODAY); return toISODate(new Date(d.getFullYear(), d.getMonth() + k + 1, 0)); };
+  const selfBase = (over) => Object.assign({
+    id: 'audit-s', kind: 'self', title: '審查用 Mission X', client: '累積作品', budget: 0, overseas: false, archived: false, deleted: false,
+    start: addDays(T, -60), due: inFuture(30), payments: [], outsourcePayDate: '', stages: [],
+    outsources: [],
+  }, over || {});
+  direct('加一支同期 Mission X → 委託案的分攤固定成本一塊錢都不變、Mission X 這段期間投入 0', () => {
+    const p = base(), st = settings(), sp = selfBase();
+    const a1 = computeFixedCostAllocations([p], st.monthlyFixedExpense);
+    const a2 = computeFixedCostAllocations([p, sp], st.monthlyFixedExpense);
+    if (Math.round(a1[p.id]) !== Math.round(a2[p.id])) return `委託案 ${Math.round(a1[p.id])} → ${Math.round(a2[p.id])}`;
+    if (Math.round(a2[sp.id]) !== 0) return `Mission X 應為 0，實際 ${Math.round(a2[sp.id])}`;
+  });
+  direct('Mission X 只在沒有委託案的月份做 → 吸收那幾個月全額（2 個月 × 月固定）', () => {
+    const p = base(), st = settings();
+    const sp = selfBase({ start: monthFirst(3), due: monthLast(4) });   // 委託案 30 天後結束，第 3–4 個月只有 Mission X
+    const a = computeFixedCostAllocations([p, sp], st.monthlyFixedExpense);
+    const c = calcCosts(sp, a[sp.id], st.monthlyFixedExpense, 0);
+    if (Math.round(c.investTotal) !== st.monthlyFixedExpense * 2) return `投入應為 ${st.monthlyFixedExpense * 2}，實際 ${Math.round(c.investTotal)}`;
+    const sum = computeProjectFixedByMonth([p, sp], st.monthlyFixedExpense, sp.id).reduce((x, r) => x + r.amount, 0);
+    if (Math.abs(sum - a[sp.id]) >= 1) return `逐月明細加總 ${Math.round(sum)} ≠ 分攤 ${Math.round(a[sp.id])}`;
+  });
+  direct('Mission X 沒有收入 → 不產生收入事件、不出現在應收、營業稅 0', () => {
+    const sp = selfBase({ budget: 300000 }), st = settings();   // 就算殘留舊的合約金額也不能算進來
+    const series = buildCashflowSeries([sp], st, 12);
+    if (series.events.some(e => /^income/.test(e.kind))) return '出現收入事件';
+    if (buildReceivableRows([sp]).length) return '出現在應收列表';
+    const c = calcCosts(sp, 0, st.monthlyFixedExpense, 0);
+    if (c.netVAT !== 0 || c.salesVAT !== 0) return `營業稅應為 0，實際 ${c.netVAT}`;
+  });
+  direct('Mission X 兩筆支出各有日期 → 現金流支出落在各自日期、應付兩筆、今日餘額只扣已付那筆、存活天數縮短', () => {
+    const st = settings();
+    const empty = selfBase();
+    const sp = selfBase({ outsources: [
+      { id: 'e1', name: '設備', type: 'company', taxable: false, amount: 12000, payDate: addDays(T, -3), paid: true, paidDate: addDays(T, -3) },
+      { id: 'e2', name: '軟體授權', type: 'company', taxable: false, amount: 6000, payDate: inFuture(20), paid: false, paidDate: null },
+    ] });
+    const ev = buildCashflowSeries([sp], st, 12).events.filter(e => /^outsource/.test(e.kind)).map(e => toISODate(e.date));
+    if (ev.join('|') !== [addDays(T, -3), inFuture(20)].join('|')) return '支出日期不對：' + ev.join('|');
+    if (buildPaymentRows([sp]).length !== 2) return '應付列表應有 2 筆';
+    const b0 = computeTodayBalance([empty], st), b1 = computeTodayBalance([sp], st);
+    if (Math.round(b0 - b1) !== 12000) return `今日餘額應少 12,000，實際少 ${Math.round(b0 - b1)}`;
+    const stress = { ...st, monthlyFixedExpense: st.monthlyFixedExpense * 1.5 };
+    const r0 = runwayDays(computeRunwaySeries([empty], stress)), r1 = runwayDays(computeRunwaySeries([sp], stress));
+    if (!(r1 < r0)) return `存活天數沒縮短：${r0} → ${r1}`;
+  });
+  direct('現金版成本分攤表不受 Mission X 影響', () => {
+    const p = base(), st = settings(), sp = selfBase({ start: addDays(T, -60), due: monthLast(4) });
+    const a = JSON.stringify(computeMonthlyFixedBreakdown([p], st.monthlyFixedExpense));
+    const b = JSON.stringify(computeMonthlyFixedBreakdown([p, sp], st.monthlyFixedExpense));
+    if (a !== b) return '加了 Mission X 之後分攤表變了';
+  });
+  direct('Mission X 改回委託案（有收入了）→ 照一般規則跟同期委託案分攤', () => {
+    const p = base(), st = settings();
+    const sp = selfBase();
+    const converted = Object.assign({}, sp, { kind: 'client', budget: 200000 });
+    const before = computeFixedCostAllocations([p, sp], st.monthlyFixedExpense);
+    const after = computeFixedCostAllocations([p, converted], st.monthlyFixedExpense);
+    if (!(after[p.id] < before[p.id])) return `委託案份額應下降：${Math.round(before[p.id])} → ${Math.round(after[p.id])}`;
+    if (!(after[sp.id] > 0)) return '改回委託案後應分到固定成本';
+  });
 
   const failed = checks.filter(c => c.通過 === '✗');
   if (typeof console !== 'undefined' && console.table) console.table(checks);
@@ -1167,6 +1273,8 @@ function StageBar({ variant, stages, selectedStageId, onClick, onCycle, onInsert
   //   每段寬度 = 份量（固定，不再依狀態放大縮小）；每段依自己的完成比例從左填到右；
   //   填色連續 → 看起來就是一整條，總填色長度 = projectPct，跟圓環數字永遠一致。
   //   階段名稱移到長條下方，長條本身乾淨。點段落＝展開該階段，Shift+點＝切狀態（跟以前一樣）。
+  // 滑鼠碰到兩段之間（或最後一段後面）→「+」立刻出現，兩側的階段往外讓出位子；下方標籤列的同一個縫也一起張開，標籤不會錯位
+  const [openGap, setOpenGap] = useState(null);
   if (variant === 'bar') {
     const weights = stages.map(getStageWeight);
     return (
@@ -1180,13 +1288,13 @@ function StageBar({ variant, stages, selectedStageId, onClick, onCycle, onInsert
             const handleClick = (e) => { if (e.shiftKey) onCycle(s.id); else onClick(s.id); };
             return (
               <React.Fragment key={s.id}>
-                {i === 0 && <InsertGap onInsert={() => onInsert(0)} />}
+                {i === 0 && <InsertGap onInsert={() => onInsert(0)} onHover={(on) => setOpenGap(on ? 0 : null)} />}
                 <button className={cls} data-stage-id={s.id} onClick={handleClick}
                   style={{ flexGrow: weights[i] }}
                   title={`${s.label} ${Math.round(prog * 100)}%（份量 ${weights[i]}%）— Shift+點擊切換狀態`}>
                   <span className="seg-fill" style={{ width: `${Math.round(prog * 1000) / 10}%` }} />
                 </button>
-                <InsertGap onInsert={() => onInsert(i + 1)} />
+                <InsertGap onInsert={() => onInsert(i + 1)} onHover={(on) => setOpenGap(on ? i + 1 : null)} />
               </React.Fragment>
             );
           })}
@@ -1196,13 +1304,13 @@ function StageBar({ variant, stages, selectedStageId, onClick, onCycle, onInsert
             const prog = stageProgress(s);
             return (
               <React.Fragment key={s.id}>
-                {i === 0 && <span className="label-gap" />}
+                {i === 0 && <span className={`label-gap ${openGap === 0 ? 'open' : ''}`} />}
                 <button type="button" className={`seg-name status-${s.status} ${selectedStageId === s.id ? 'selected' : ''}`}
                   style={{ flexGrow: weights[i] }} onClick={(e) => { if (e.shiftKey) onCycle(s.id); else onClick(s.id); }}>
                   <span className="seg-name-text">{s.label}</span>
                   <span className="seg-pct">{Math.round(prog * 100)}%</span>
                 </button>
-                <span className="label-gap" />
+                <span className={`label-gap ${openGap === i + 1 ? 'open' : ''}`} />
               </React.Fragment>
             );
           })}
@@ -1242,9 +1350,10 @@ function StageBar({ variant, stages, selectedStageId, onClick, onCycle, onInsert
   );
 }
 
-function InsertGap({ onInsert }) {
+function InsertGap({ onInsert, onHover }) {
   return (
-    <div className="insert-gap" onClick={(e) => { e.stopPropagation(); onInsert(); }} title="於此處插入新階段">
+    <div className="insert-gap" onClick={(e) => { e.stopPropagation(); onHover && onHover(false); onInsert(); }} title="於此處插入新階段"
+      onMouseEnter={() => onHover && onHover(true)} onMouseLeave={() => onHover && onHover(false)}>
       <span className="insert-plus">+</span>
     </div>
   );
@@ -1490,7 +1599,7 @@ const ITEM_EXPAND_KEY = 'jt745-item-expand';
 function loadItemExpand() { try { return JSON.parse(localStorage.getItem(ITEM_EXPAND_KEY) || '{}') || {}; } catch (e) { return {}; } }
 function saveItemExpand(map) { try { localStorage.setItem(ITEM_EXPAND_KEY, JSON.stringify(map)); } catch (e) {} }
 
-function ChecklistEditor({ stage, onUpdate }) {
+function ChecklistEditor({ stage, onUpdate, showPresets = true }) {
   const [draft, setDraft] = useState('');
   const inputRef = useRef(null);
   const [dragOverItemId, setDragOverItemId] = useState(null);
@@ -1910,7 +2019,7 @@ function ChecklistEditor({ stage, onUpdate }) {
           <button type="submit" className="add-item-btn" aria-label="新增">+</button>
         </form>
         <AddQtyItemForm onAdd={addQtyItem} />
-        {hasAnyAvailable && (
+        {showPresets && hasAnyAvailable && (
           <select className="input select item-quick-pick" defaultValue="" onChange={onQuickPick}>
             <option value="">+ 從預設加入…</option>
             {allStagesAvailable.map(({ label, items }) => (
@@ -2028,7 +2137,7 @@ function StageDetail({ project, stageId, onClose, onUpdateStage, onDeleteStage, 
         </div>
       </div>
 
-      <ChecklistEditor stage={stage} onUpdate={(s) => onUpdateStage(project.id, stageId, s)} />
+      <ChecklistEditor stage={stage} showPresets={isAnimationProject(project)} onUpdate={(s) => onUpdateStage(project.id, stageId, s)} />
 
       <div className="detail-section" style={{ gridColumn: '1 / -1' }}>
         <div className="section-label">備註</div>
@@ -2189,6 +2298,25 @@ function totalWorkDays(p) {
   }, 0);
 }
 
+// 某個月的固定支出由誰負擔（專案損益用）：
+//   當月有委託案在跑 → 只在委託案之間按天數分（Mission X 不分攤，跟沒有 Mission X 時一模一樣）
+//   當月只有 Mission X 在做 → 該月固定支出由 Mission X 按天數分，記成它的「投入」
+// 回傳 { days: {id: 天數}, total: 天數合計 }；total 為 0 代表這個月沒人負擔。
+function fixedCostPoolForMonth(valid, monthStart, monthEnd) {
+  const pick = (list) => {
+    const days = {}; let total = 0;
+    for (const p of list) {
+      const d = daysInMonthForPeriods(getWorkPeriods(p), monthStart, monthEnd);
+      if (d <= 0) continue;
+      days[p.id] = d; total += d;
+    }
+    return { days, total };
+  };
+  const client = pick(valid.filter(p => !isSelfProject(p)));
+  if (client.total > 0) return client;
+  return pick(valid.filter(isSelfProject));
+}
+
 // 某個案子在「專案損益」的分攤固定成本是怎麼湊出來的：逐月列出（天數、當月同時在跑的案子、拿到多少）。
 // 公式跟 computeFixedCostAllocations 完全相同，只是把加總的過程攤開；各月加總＝該案的分攤固定成本。
 function computeProjectFixedByMonth(projects, monthlyFixedExpense, projectId) {
@@ -2207,17 +2335,24 @@ function computeProjectFixedByMonth(projects, monthlyFixedExpense, projectId) {
       if (!rows.find(r => r.key === key)) {
         const monthStart = new Date(cursor.getFullYear(), cursor.getMonth(), 1); monthStart.setHours(0, 0, 0, 0);
         const monthEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0); monthEnd.setHours(0, 0, 0, 0);
-        let totalDays = 0, myDays = 0; const others = [];
-        for (const p of valid) {
-          const d = daysInMonthForPeriods(getWorkPeriods(p), monthStart, monthEnd);
-          if (d <= 0) continue;
-          totalDays += d;
-          if (p.id === projectId) myDays = d; else others.push({ title: p.title, days: d });
-        }
+        const pool = fixedCostPoolForMonth(valid, monthStart, monthEnd);
+        const totalDays = pool.total;
+        const myDays = pool.days[projectId] || 0;
+        const others = valid.filter(p => p.id !== projectId && pool.days[p.id]).map(p => ({ title: p.title, days: pool.days[p.id] }));
+        // Mission X 在這個月沒分到（有委託案在扛）：記下是誰在扛，畫面上說明「這個月不算投入」
+        const coveredBy = (myDays === 0 && isSelfProject(target))
+          ? valid.filter(p => pool.days[p.id]).map(p => p.title) : [];
+        const ownDays = daysInMonthForPeriods(getWorkPeriods(target), monthStart, monthEnd);
         if (myDays > 0) rows.push({
           key, label: `${cursor.getFullYear()}/${cursor.getMonth() + 1}`,
           days: myDays, totalDays, others,
           amount: monthly * myDays / totalDays,
+          daysInMonth: monthEnd.getDate(),
+        });
+        else if (coveredBy.length > 0 && ownDays > 0) rows.push({
+          key, label: `${cursor.getFullYear()}/${cursor.getMonth() + 1}`,
+          days: ownDays, totalDays: 0, others: [], coveredBy,
+          amount: 0,
           daysInMonth: monthEnd.getDate(),
         });
       }
@@ -2262,14 +2397,10 @@ function computeFixedCostAllocations(projects, monthlyFixedExpense) {
     const monthEnd = new Date(year, month + 1, 0); // last day of month
     monthEnd.setHours(0, 0, 0, 0);
 
-    const daysPerProject = {};
-    let totalDays = 0;
-    for (const p of valid) {
-      const days = daysInMonthForPeriods(getWorkPeriods(p), monthStart, monthEnd); // 含頭尾；沒填區間＝起始→交件
-      if (days <= 0) continue; // no overlap with this month
-      daysPerProject[p.id] = days;
-      totalDays += days;
-    }
+    // 委託案優先；當月沒有委託案才輪到 Mission X（見 fixedCostPoolForMonth）
+    const pool = fixedCostPoolForMonth(valid, monthStart, monthEnd);
+    const daysPerProject = pool.days;
+    const totalDays = pool.total;
     if (totalDays === 0) continue;
 
     // Spread the full month's fixed expense across active projects in proportion
@@ -2290,7 +2421,8 @@ function computeFixedCostAllocations(projects, monthlyFixedExpense) {
 //   外包：只扣到月底為止「已付（實付日）或表定要付（預估付款日）」的，還沒付的錢還在戶頭裡。
 function computeMonthlyFixedBreakdown(projects, monthlyFixedExpense) {
   var monthly = Number(monthlyFixedExpense) || 0;
-  var valid = (projects || []).filter(function(p) { return !p.deleted && p.start && p.due; });
+  // Mission X 沒有收入、付不出房租，不進這張現金版的表（它的投入看專案損益／投入面板）
+  var valid = (projects || []).filter(function(p) { return !p.deleted && p.start && p.due && !isSelfProject(p); });
   if (monthly === 0 || valid.length === 0) return [];
 
   // 每案的付款時程 + 外包總額
@@ -2589,7 +2721,7 @@ function calcCosts(project, fixedCostOverride, monthlyFixedExpenseGlobal, overti
   });
 
   const isOverseas = project.overseas === true;
-  const budget = project.budget || 0;
+  const budget = isSelfProject(project) ? 0 : (project.budget || 0);   // Mission X 沒有合約收入（殘留的舊金額不算）
   const preTax = isOverseas ? budget : Math.round(budget / 1.05);
   const salesVAT = isOverseas ? 0 : budget - preTax;
   const netVAT = isOverseas ? 0 : Math.max(0, salesVAT - creditableInputTax);
@@ -2598,7 +2730,10 @@ function calcCosts(project, fixedCostOverride, monthlyFixedExpenseGlobal, overti
   const fixedCost = totalFixedAlloc;
   const profit = budget - fixedCost - outsourceTotal - netVAT;
 
-  return { days, months, fixedCost, baseFixedCost, overtimeFixed, outsourceTotal, companyOutsource, personalOutsource, salesVAT, creditableInputTax, netVAT, profit, preTax, isOverseas, isSegmented, workSegments };
+  // Mission X：沒有收入，成本就是「投入」——時間（當月沒有委託案時吸收的固定支出）＋ 現金（直接支出）
+  const isSelf = isSelfProject(project);
+  const investTotal = isSelf ? fixedCost + outsourceTotal : 0;
+  return { days, months, fixedCost, baseFixedCost, overtimeFixed, outsourceTotal, companyOutsource, personalOutsource, salesVAT, creditableInputTax, netVAT, profit, preTax, isOverseas, isSegmented, workSegments, isSelf, investTotal };
 }
 
 // ---------- 損益原因（系統自動判斷）----------
@@ -2771,7 +2906,7 @@ function buildCashflowSeries(projects, settings, horizonMonths = 12, opts = {}) 
       if (!o.taxable) continue;
       const amt = Number(o.amount) || 0;
       if (amt <= 0) continue;
-      const dateStr = isOutsourcePaid(o) ? (o.paidDate || '') : getOutsourcePayDate(p);
+      const dateStr = isOutsourcePaid(o) ? (o.paidDate || '') : getOutsourceItemPayDate(p, o);
       if (!dateStr) continue;
       const d = new Date(dateStr);
       if (isNaN(d)) continue;
@@ -2861,7 +2996,7 @@ function buildCalendarEvents(projects) {
         kind: 'delivery',
         projectId: p.id,
         projectTitle: p.title,
-        label: '交件',
+        label: isSelfProject(p) ? '上線' : '交件',
         detail: p.client,
       });
     }
@@ -2950,7 +3085,19 @@ function buildCalendarEvents(projects) {
     // 未付的外包合併成一個事件（共用 outsourcePayDate）；已付的每筆獨立事件（落在各自的 paidDate）
     const unpaidOutsources = (p.outsources || []).filter(o => !isOutsourcePaid(o));
     const unpaidTotal = unpaidOutsources.reduce((a, o) => a + (Number(o.amount) || 0), 0);
-    const outDate = getOutsourcePayDate(p);
+    const outDate = isSelfProject(p) ? '' : getOutsourcePayDate(p);
+    // Mission X：每筆支出各有自己的日期，各自一個事件
+    if (isSelfProject(p)) {
+      for (const o of unpaidOutsources) {
+        const amt = Number(o.amount) || 0;
+        const dt = getOutsourceItemPayDate(p, o);
+        if (amt === 0 || !dt) continue;
+        events.push({
+          date: dt, kind: 'payment-out', projectId: p.id, projectTitle: p.title,
+          outsourceId: o.id, label: (o.name || '支出') + '（預估）', amount: amt,
+        });
+      }
+    }
     if (outDate && unpaidTotal > 0) {
       events.push({
         date: outDate,
@@ -3033,6 +3180,10 @@ function patchForCalendarEvent(project, eventInfo, newDate) {
           : isPaymentReceived(p) ? { ...p, receivedDate: newDate } : { ...p, dueDate: newDate }),
       };
     case 'payment-out':
+      // Mission X 的單筆支出 → 改該筆的預計付款日
+      if (eventInfo.outsourceId) {
+        return { outsources: (project.outsources || []).map(o => o.id === eventInfo.outsourceId ? { ...o, payDate: newDate } : o) };
+      }
       // 未付合併事件 → 改 outsourcePayDate（所有未付的外包跟著移動）
       return { outsourcePayDate: newDate };
     case 'payment-out-paid':
@@ -3089,7 +3240,9 @@ function buildExportData(allProjects, settings) {
 
     return {
       "專案名稱": p.title,
-      "客戶": p.client,
+      "案子性質": isSelfProject(p) ? 'Mission X（無收入；投入＝沒有委託案的月份負擔的固定支出＋直接支出）' : '委託案',
+      ...(isSelfProject(p) ? { "目的": p.client, "總投入": Math.round(c.investTotal), "時間投入_固定支出": Math.round(c.fixedCost), "現金投入_直接支出": c.outsourceTotal } : {}),
+      "客戶": isSelfProject(p) ? null : p.client,
       "起始日期": p.start || null,
       "交件日期": p.due || null,
       "距離交件天數": daysToDue,
@@ -3189,11 +3342,11 @@ function buildExportData(allProjects, settings) {
   };
 
   const activeBudgetTotal = active.reduce((a, p) => a + (Number(p.budget) || 0), 0);
-  const activeProfitTotal = active.reduce((a, p) => a + calcCosts(p, allocations[p.id], monthlyFixed, overtimeAlloc[p.id]).profit, 0);
+  const activeProfitTotal = active.filter(p => !isSelfProject(p)).reduce((a, p) => a + calcCosts(p, allocations[p.id], monthlyFixed, overtimeAlloc[p.id]).profit, 0);
   const activeFixedTotal  = active.reduce((a, p) => a + (allocations[p.id] || 0), 0);
 
   return {
-    "_說明": "這份檔案是 jt745 進度追蹤器在某時刻的快照，給 Claude 用來討論財務 / 專案決策。固定成本採『按月分攤』：每個月的全域固定支出由當月活躍的所有非刪除專案按各案在當月的天數比例分擔；當月只有一案時，該案吸收當月全額。",
+    "_說明": "這份檔案是 jt745 進度追蹤器在某時刻的快照，給 Claude 用來討論財務 / 專案決策。固定成本採『按月分攤』：每個月的全域固定支出由當月活躍的所有非刪除專案按各案在當月的天數比例分擔；當月只有一案時，該案吸收當月全額。Mission X（kind=self）不參與有委託案的月份；只有 Mission X 在做的月份，該月固定支出由 Mission X 按天數分擔，記為 Mission X 投入。",
     "匯出時間": new Date().toISOString(),
     "今日日期": today,
     "全域設定": hasSettings ? {
@@ -3830,6 +3983,140 @@ function ProjectFinanceDetail({ project, onUpdate, fixedCostShare, overtimeShare
   );
 }
 
+// ---------- Mission X：投入面板 ----------
+// Mission X 沒有收入，所以不顯示合約／收款／淨利，只顯示「投入」：
+//   時間 ＝ 當月沒有委託案在跑時，由本案負擔的每月固定支出（有委託案的月份由委託案負擔，不算進來）
+//   現金 ＝ 直接支出（設備、軟體、外包…），每筆有自己的付款日
+const SELF_PURPOSES = ['累積作品', '個人品牌', '開發新收入', '教學', '學新技術', '實驗研發'];
+function SelfInvestPanel({ project, onUpdate, fixedCostShare, monthlyFixedExpense, allProjects, outsourceRoles, eyebrowExtra }) {
+  const c = useMemo(
+    () => calcCosts(project, fixedCostShare, monthlyFixedExpense, 0),
+    [project, fixedCostShare, monthlyFixedExpense]
+  );
+  const byMonth = useMemo(
+    () => (allProjects ? computeProjectFixedByMonth(allProjects, monthlyFixedExpense, project.id) : []),
+    [allProjects, monthlyFixedExpense, project.id, project.workPeriods, project.start, project.due, project.extendedDue]
+  );
+  const update = (patch) => onUpdate({ ...project, ...patch });
+  const exps = project.outsources || [];
+  const addExpense = () => update({ outsources: [...exps, { id: uid('o'), name: '設備', note: '', type: 'company', taxable: true, amount: 0, payDate: toISODate(TODAY), paid: false, paidDate: null }] });
+  const updateExpense = (id, patch) => update({ outsources: exps.map(o => o.id === id ? { ...o, ...patch } : o) });
+  const removeExpense = (id) => update({ outsources: exps.filter(o => o.id !== id) });
+  const monthly = Number(monthlyFixedExpense) || 0;
+  const months = monthly > 0 ? c.investTotal / monthly : 0;
+  const paidCash = exps.filter(isOutsourcePaid).reduce((a, o) => a + (Number(o.amount) || 0), 0);
+  const ownMonths = byMonth.filter(r => r.amount > 0).length;
+  const roles = outsourceRoles || DEFAULT_OUTSOURCE_ROLES;
+
+  return (
+    <div className="cost-panel self-panel">
+      <div className="cost-header">
+        <div>
+          <div className="detail-eyebrow">{project.title} · Mission X{eyebrowExtra || ''}</div>
+          <h3 className="detail-title">投入</h3>
+          <div className="self-purpose">目的：{project.client || '—'}</div>
+        </div>
+        <div className="cost-summary">
+          <div className="summary-item invest-total">
+            <div className="summary-label">總投入</div>
+            <div className="summary-value big">{fmtNT(c.investTotal)}</div>
+            {monthly > 0 && <div className="summary-sub">約 {months.toFixed(1)} 個月固定支出</div>}
+          </div>
+          <div className="summary-item">
+            <div className="summary-label">時間（固定支出）</div>
+            <div className="summary-value">{fmtNT(c.fixedCost)}</div>
+            <div className="summary-sub">{ownMonths > 0 ? `${ownMonths} 個月由本案負擔` : '目前都由委託案負擔'}</div>
+          </div>
+          <div className="summary-item">
+            <div className="summary-label">現金（直接支出）</div>
+            <div className="summary-value">{fmtNT(c.outsourceTotal)}</div>
+            <div className="summary-sub">已付 {fmtNT(paidCash)}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="self-rule">
+        有委託案在跑的月份，固定支出由委託案負擔；只有 Mission X 在做的月份，那個月的固定支出算成這裡的投入。
+        之後這個案子有了收入，到編輯視窗改成「委託案」，就照一般專案計算。
+      </div>
+
+      <div className="cost-section">
+        <div className="cost-section-h"><div className="cost-block-h"><span>逐月固定支出</span></div></div>
+        {byMonth.length === 0 ? (
+          <div className="empty-row">{monthly > 0 ? '還沒設定起始日與上線日。' : '還沒設定每月固定支出（財務 → 現金流 → 設定）。'}</div>
+        ) : (
+          <div className="self-months">
+            {byMonth.map(r => (
+              <div key={r.key} className={`self-month ${r.amount > 0 ? 'own' : 'covered'}`}>
+                <span className="sm-label">{r.label}</span>
+                <span className="sm-days">{r.days} 天</span>
+                <span className="sm-note">
+                  {r.amount > 0
+                    ? (r.others.length ? `與 ${r.others.map(o => o.title).join('、')} 按天數分` : '本月只有 Mission X，全額算投入')
+                    : `由 ${r.coveredBy.join('、')} 負擔`}
+                </span>
+                <span className="sm-amt">{r.amount > 0 ? fmtNT(r.amount) : '—'}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="cost-section">
+        <div className="cost-section-h">
+          <div className="cost-block-h"><span>直接支出</span></div>
+          <button className="btn btn-ghost small" onClick={addExpense}>+ 新增支出</button>
+        </div>
+        <div className="self-exp-list">
+          {exps.length > 0 && (
+            <div className="self-exp-row head">
+              <div>項目</div><div>說明</div><div>類型</div><div>金額</div><div>付款日</div><div className="center">可抵稅</div><div className="center">已付</div><div></div>
+            </div>
+          )}
+          {exps.length === 0 && <div className="empty-row">尚無直接支出。器材、軟體、外包都記在這裡。</div>}
+          {exps.map(o => {
+            const known = DEFAULT_EXPENSE_CATEGORIES.includes(o.name) || roles.includes(o.name);
+            const date = isOutsourcePaid(o) ? (o.paidDate || o.payDate || '') : (o.payDate || getOutsourceItemPayDate(project, o));
+            return (
+              <div key={o.id} className={`self-exp-row ${isOutsourcePaid(o) ? 'paid' : ''}`}>
+                <select className="input select" value={o.name || ''} onChange={e => updateExpense(o.id, { name: e.target.value })}>
+                  {!known && o.name && <option value={o.name}>{o.name}</option>}
+                  <optgroup label="支出類別">
+                    {DEFAULT_EXPENSE_CATEGORIES.map(r => <option key={r} value={r}>{r}</option>)}
+                  </optgroup>
+                  <optgroup label="外包角色">
+                    {roles.filter(r => !DEFAULT_EXPENSE_CATEGORIES.includes(r)).map(r => <option key={r} value={r}>{r}</option>)}
+                  </optgroup>
+                </select>
+                <input className="input" value={o.note || ''} placeholder="例：收音麥克風" onChange={e => updateExpense(o.id, { note: e.target.value })} />
+                <div className="type-toggle">
+                  <button className={o.type !== 'personal' ? 'on' : ''} onClick={() => updateExpense(o.id, { type: 'company', taxable: true })}>公司</button>
+                  <button className={o.type === 'personal' ? 'on' : ''} onClick={() => updateExpense(o.id, { type: 'personal', taxable: false })}>個人</button>
+                </div>
+                <MoneyInput value={o.amount} onChange={v => updateExpense(o.id, { amount: v })} />
+                <input type="date" className="date-input compact" value={date}
+                  onChange={e => updateExpense(o.id, isOutsourcePaid(o) ? { paidDate: e.target.value, payDate: e.target.value } : { payDate: e.target.value })} />
+                <div className="center" data-label="可抵稅">
+                  <div className={`check-box ${o.taxable ? 'checked' : ''} ${o.type === 'personal' ? 'disabled' : ''}`}
+                    onClick={() => { if (o.type !== 'personal') updateExpense(o.id, { taxable: !o.taxable }); }}
+                    title={o.type === 'personal' ? '個人無法抵稅' : '可抵扣 5% 進項稅（跟委託案外包同一套規則）'} />
+                </div>
+                <div className="center" data-label="已付">
+                  <div className={`check-box ${isOutsourcePaid(o) ? 'checked' : ''}`} title={isOutsourcePaid(o) ? '已付（點一下改回未付）' : '標記已付'}
+                    onClick={() => updateExpense(o.id, isOutsourcePaid(o)
+                      ? { paid: false, paidDate: null }
+                      : { paid: true, paidDate: defaultActualDate(o.payDate || date) })} />
+                </div>
+                <button className="delete-item visible" onClick={() => { if (confirm('確定刪除這筆支出？')) removeExpense(o.id); }} title="刪除">×</button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ProjectFinanceModal({ project, onClose, ...detailProps }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -3841,7 +4128,9 @@ function ProjectFinanceModal({ project, onClose, ...detailProps }) {
     <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal modal-wide finance-modal">
         <button className="modal-close" onClick={onClose} title="關閉 (Esc)">×</button>
-        <ProjectFinanceDetail project={project} {...detailProps} />
+        {isSelfProject(project)
+          ? <SelfInvestPanel project={project} {...detailProps} />
+          : <ProjectFinanceDetail project={project} {...detailProps} />}
       </div>
     </div>,
     document.body
@@ -3849,7 +4138,7 @@ function ProjectFinanceModal({ project, onClose, ...detailProps }) {
 }
 
 // ---------- Project Card ----------
-function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycleStage, onCloseDetail, onUpdateStage, onDeleteStage, onInsertStage, onUpdateProject, onTogglePanel, onDeleteProject, onArchive, archiveMode = 'deliver', onRestore, onPurgeProject, density, stageVariant, dragHandleProps, dropTargetProps, isDragging, isOver, panelStyle, fixedCostShare, overtimeShare, monthlyFixedExpense, onOpenCashSettings, outsourceRoles, customOutsourceRoles, onUpdateCustomOutsourceRoles, isFocused, anyFocused, onOpenFullFinance, presentation }) {
+function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycleStage, onCloseDetail, onUpdateStage, onDeleteStage, onInsertStage, onUpdateProject, onTogglePanel, onDeleteProject, onArchive, archiveMode = 'deliver', onRestore, onPurgeProject, density, stageVariant, dragHandleProps, dropTargetProps, isDragging, isOver, panelStyle, fixedCostShare, overtimeShare, monthlyFixedExpense, onOpenCashSettings, outsourceRoles, customOutsourceRoles, onUpdateCustomOutsourceRoles, isFocused, anyFocused, onOpenFullFinance, presentation, allProjects }) {
   const origDue = new Date(project.due);
   const isExtended = !!project.extendedDue && new Date(project.extendedDue) > origDue;
   const effDue = isExtended ? new Date(project.extendedDue) : origDue;
@@ -3897,6 +4186,15 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
   const earlyDays = (canArchive && project.completedAt && !isNaN(origDue))
     ? daysBetween(new Date(project.completedAt), origDue) : 0;
   const cardColor = colorById(project.color);
+  const isSelf = isSelfProject(project);
+  // 主力專案（星號）：點一下切換；設為主力時星星閃一下光
+  const [starBurst, setStarBurst] = useState(false);
+  const toggleStar = (e) => {
+    e.stopPropagation();
+    const on = !project.starred;
+    onUpdateProject(project.id, { starred: on });
+    if (on) { setStarBurst(true); setTimeout(() => setStarBurst(false), 900); }
+  };
   const [metaOpen, setMetaOpen] = useState(false);
   const billing = getBillingStatus(project);
   const coverUrl = useCoverUrl(project.coverPath);
@@ -3908,7 +4206,7 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
 
   return (
     <div
-      className={`card ${density === 'dense' ? 'dense' : ''} ${isDragging ? 'dragging' : ''} ${isOver ? 'drag-over' : ''} ${canArchive ? 'celebrate' : ''} ${isFocused ? 'focused' : ''} ${anyFocused && !isFocused ? 'dimmed' : ''} ${cardColor.hex ? 'has-color' : ''} ${metaOpen ? 'meta-open' : ''} ${coverUrl ? 'has-cover' : ''} ${panelOpen ? 'panel-open' : ''}`}
+      className={`card ${project.starred ? 'starred' : ''} ${density === 'dense' ? 'dense' : ''} ${isDragging ? 'dragging' : ''} ${isOver ? 'drag-over' : ''} ${canArchive ? 'celebrate' : ''} ${isFocused ? 'focused' : ''} ${anyFocused && !isFocused ? 'dimmed' : ''} ${cardColor.hex ? 'has-color' : ''} ${metaOpen ? 'meta-open' : ''} ${coverUrl ? 'has-cover' : ''} ${panelOpen ? 'panel-open' : ''}`}
       ref={cardRef}
       data-screen-label={project.title}
       data-project-id={project.id}
@@ -3935,9 +4233,9 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
                   恢復進行中
                 </button>
               ) : (
-                <button className="card-action archive-cta" onClick={() => onArchive(project.id)} title="製作結束、已交給客戶。卡片會離開主畫面；款項未收齊的話，仍會留在「收付款」頁追蹤">
+                <button className="card-action archive-cta" onClick={() => onArchive(project.id)} title={isSelf ? '已經上線。卡片會離開主畫面，投入紀錄仍保留在財務頁' : '製作結束、已交給客戶。卡片會離開主畫面；款項未收齊的話，仍會留在「收付款」頁追蹤'}>
                   <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M2 3.5h10v2H2zM3 6v5h8V6M5.5 8h3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                  已交件
+                  {isSelf ? '已上線' : '已交件'}
                 </button>
               )
             )}
@@ -3947,7 +4245,7 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
             <button className={`card-action ${project.infoOpen ? 'on' : ''}`} onClick={() => onTogglePanel(project.id, 'info')} title="專案資訊">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.2"/><path d="M7 6v4M7 4v.01" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
             </button>
-            <button className={`card-action ${project.costsOpen ? 'on' : ''}`} onClick={() => onTogglePanel(project.id, 'costs')} title="財務細節">
+            <button className={`card-action ${project.costsOpen ? 'on' : ''}`} onClick={() => onTogglePanel(project.id, 'costs')} title={isSelf ? '投入' : '財務細節'}>
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v12M3.5 3.5h5a2 2 0 1 1 0 4h-3a2 2 0 1 0 0 4h5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>
             </button>
             <button className="card-action danger" onClick={() => { if (confirm(`確定把「${project.title}」移到垃圾桶？`)) onDeleteProject(project.id); }} title="移到垃圾桶（可從垃圾桶分頁復原）">
@@ -3959,13 +4257,23 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
       <span className="card-rim" aria-hidden="true" />
       <div className="card-hero" ref={heroRef}>
       {coverUrl && (
-        <div className="card-cover" aria-hidden="true"
-          style={{ backgroundImage: `url("${coverUrl}")`, '--cx': `${Number(project.coverX) || 0}%`, '--cy': `${Number(project.coverY) || 0}%`, '--cover-zoom': Number(project.coverZoom) || 1 }} />
+        <div className={`card-cover ${project.coverFX != null ? 'focal' : ''}`} aria-hidden="true"
+          style={{ backgroundImage: `url("${coverUrl}")`, '--cx': `${Number(project.coverX) || 0}%`, '--cy': `${Number(project.coverY) || 0}%`,
+            '--fx': `${project.coverFX != null ? Number(project.coverFX) : 50}%`, '--fy': `${project.coverFY != null ? Number(project.coverFY) : 50}%`,
+            '--cover-zoom': Number(project.coverZoom) || 1 }} />
       )}
       <div className="card-row">
         <div className="card-title-block">
-          <div className="project-title">{project.title}</div>
-          <div className="client-name">{project.client}</div>
+          <div className="title-line">
+            <div className="project-title">{project.title}</div>
+            {!project.deleted && (
+              <button type="button" className={`star-btn ${project.starred ? 'on' : ''} ${starBurst ? 'burst' : ''}`}
+                onClick={toggleStar} title={project.starred ? '主力專案（點一下取消）' : '設為主力專案'} aria-pressed={!!project.starred}>
+                <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 2.8l2.75 5.86 6.4.73-4.76 4.36 1.3 6.32L12 16.9l-5.69 3.17 1.3-6.32L2.85 9.39l6.4-.73z" /></svg>
+              </button>
+            )}
+          </div>
+          <div className="client-name">{isSelf && <span className="self-pill">Mission X</span>}{project.client}</div>
         </div>
 
         <div className="card-right">
@@ -3978,12 +4286,12 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
                 <div className="countdown-label">
                   <span className="due-date">{fmtDate(project.deliveredAt ? new Date(project.deliveredAt) : effDue)}</span>
                   <span className="due-sep">·</span>
-                  <span>{project.deliveredAt ? '已交件' : '交件'}</span>
+                  <span>{isSelf ? (project.deliveredAt ? '已上線' : '上線') : (project.deliveredAt ? '已交件' : '交件')}</span>
                 </div>
                 {earlyDays > 0 && (
                   <div className="early-note">提前 {earlyDays} 天完成</div>
                 )}
-                {billing !== 'full' && (
+                {billing !== 'full' && !isSelf && (
                   <div className="billing-note">待收 {fmtNT((Number(project.budget) || 0) - getReceivedAmount(project))}</div>
                 )}
               </>
@@ -3995,7 +4303,7 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
                 <div className="countdown-label">
                   <span className="due-date">{fmtDate(effDue)}</span>
                   <span className="due-sep">·</span>
-                  <span>{isExtended ? '延長賽' : (warn ? '緊急' : '距交件')}</span>
+                  <span>{isExtended ? '延長賽' : (warn ? '緊急' : (isSelf ? '距上線' : '距交件'))}</span>
                 </div>
                 {isExtended && (
                   <div className="overtime-note">原定 {fmtDate(origDue)}・加時 {extDays} 天</div>
@@ -4015,18 +4323,20 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
         </button>
         {metaOpen && (
           <div className="card-meta">
+            {!isSelf && (<>
             <div className="meta-item">
               <span className="meta-label">金額</span>
               <span className="meta-value">{fmtNT(project.budget)}</span>
             </div>
             <span className="sep">·</span>
+            </>)}
             <div className="meta-item">
               <span className="meta-label">起始</span>
               <span className="meta-value muted">{fmtDate(project.start)}</span>
             </div>
             <span className="sep">·</span>
             <div className="meta-item">
-              <span className="meta-label">外包</span>
+              <span className="meta-label">{isSelf ? '支出' : '外包'}</span>
               <span className="meta-value">{(project.outsources || []).length} 筆</span>
             </div>
             {canArchive && (
@@ -4101,7 +4411,18 @@ function ProjectCard({ project, expandedStageId, costsOpen, onStageClick, onCycl
         <InfoPanel project={project} onUpdate={(p) => onUpdateProject(project.id, p)} />
       )}
 
-      {project.costsOpen && (
+      {project.costsOpen && isSelf && (
+        <SelfInvestPanel
+          project={project}
+          onUpdate={(p) => onUpdateProject(project.id, p)}
+          fixedCostShare={fixedCostShare}
+          monthlyFixedExpense={monthlyFixedExpense}
+          allProjects={allProjects}
+          outsourceRoles={outsourceRoles}
+        />
+      )}
+
+      {project.costsOpen && !isSelf && (
         <CostPanel
           project={project}
           onUpdate={(p) => onUpdateProject(project.id, p)}
@@ -4144,11 +4465,14 @@ const colorById = (id) => PROJECT_COLORS.find(c => c.id === id) || PROJECT_COLOR
 
 // 劇照取景：像 Facebook 封面——拖曳移動、滑桿縮放。存的是 translate %（x/y）和 zoom，
 // 卡片用同一組 CSS 變數畫，所以預覽框＝卡片實際看到的範圍（框的長寬比對齊收合狀態的卡片）。
-function CoverCropEditor({ url, x, y, zoom, onChange, frame }) {
+function CoverCropEditor({ url, x, y, fx, fy, zoom, onChange, frame }) {
   // frame = 打開視窗那一刻量到的卡片尺寸 → 預覽框用同樣的長寬比，看到的範圍才會一樣
+  // 取景方式（2026-11-03 改）：存「焦點」coverFX / coverFY（0–100，圖片的哪一點對準框）。
+  //   畫面用 background-position: 焦點 ＋ 以焦點為中心放大 → 框永遠被圖填滿、不會露出空白，
+  //   也拖得到 cover 裁掉的上下（或左右）部分。舊資料（只有 coverX/coverY 位移）沿用舊畫法，使用者動過才換成焦點。
   const aspect = (frame && frame.w > 0 && frame.h > 0) ? (frame.w / frame.h) : (1120 / 236);
   const boxRef = useRef(null);
-  const [nat, setNat] = useState(null);      // 圖片原始尺寸，用來限制不能拖出邊界
+  const [nat, setNat] = useState(null);      // 圖片原始尺寸
   const drag = useRef(null);
   useEffect(() => {
     let alive = true; const img = new Image();
@@ -4156,44 +4480,50 @@ function CoverCropEditor({ url, x, y, zoom, onChange, frame }) {
     img.src = url;
     return () => { alive = false; };
   }, [url]);
-  // 允許的最大位移（%）：cover 縮放後多出來的部分的一半
-  const limits = (z) => {
-    const box = boxRef.current; if (!box || !nat) return { mx: 100, my: 100 };
-    const W = box.clientWidth, H = box.clientHeight;
-    const s = Math.max(W / nat.w, H / nat.h);
-    const rw = nat.w * s * z, rh = nat.h * s * z;
-    return { mx: Math.max(0, (rw - W) / 2) / W * 100, my: Math.max(0, (rh - H) / 2) / H * 100 };
+  const clamp01 = (v) => Math.max(0, Math.min(100, v));
+  // 焦點從 0 拉到 100，畫面上的圖總共能移動多少 px：放大後的圖比框多出來的長度
+  const spans = (z) => {
+    const box = boxRef.current; if (!box || !nat) return null;
+    const W = box.clientWidth, H = box.clientHeight, zs = z * 1.02;
+    const k = Math.max(W / nat.w, H / nat.h);
+    return { sx: Math.max(0, nat.w * k * zs - W), sy: Math.max(0, nat.h * k * zs - H), W, H };
   };
-  const clamp = (v, m) => Math.max(-m, Math.min(m, v));
+  const legacy = fx == null || fy == null;
+  // 舊資料：把舊的位移大約換算成焦點，只拿來顯示；沒動就不寫回
+  let curFx = legacy ? 50 : fx, curFy = legacy ? 50 : fy;
+  if (legacy) {
+    const sp = spans(zoom);
+    if (sp) {
+      if (sp.sx > 0) curFx = clamp01(50 - (Number(x) || 0) / 100 * sp.W / sp.sx * 100);
+      if (sp.sy > 0) curFy = clamp01(50 - (Number(y) || 0) / 100 * sp.H / sp.sy * 100);
+    }
+  }
   const onPointerDown = (e) => {
     e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId);
-    drag.current = { sx: e.clientX, sy: e.clientY, x0: x, y0: y };
+    drag.current = { sx: e.clientX, sy: e.clientY, fx0: curFx, fy0: curFy };
   };
   const onPointerMove = (e) => {
     if (!drag.current) return;
-    const box = boxRef.current; if (!box) return;
-    const { mx, my } = limits(zoom);
-    const nx = clamp(drag.current.x0 + (e.clientX - drag.current.sx) / box.clientWidth * 100, mx);
-    const ny = clamp(drag.current.y0 + (e.clientY - drag.current.sy) / box.clientHeight * 100, my);
-    onChange({ coverX: Math.round(nx * 10) / 10, coverY: Math.round(ny * 10) / 10 });
+    const sp = spans(zoom); if (!sp) return;
+    // 往右拖 → 看到圖的更左邊 → 焦點往左
+    const nfx = sp.sx > 0 ? clamp01(drag.current.fx0 - (e.clientX - drag.current.sx) / sp.sx * 100) : drag.current.fx0;
+    const nfy = sp.sy > 0 ? clamp01(drag.current.fy0 - (e.clientY - drag.current.sy) / sp.sy * 100) : drag.current.fy0;
+    onChange({ coverFX: Math.round(nfx * 10) / 10, coverFY: Math.round(nfy * 10) / 10 });
   };
   const onPointerUp = () => { drag.current = null; };
-  const setZoom = (z) => {
-    const { mx, my } = limits(z);
-    onChange({ coverZoom: z, coverX: clamp(x, mx), coverY: clamp(y, my) });
-  };
+  const setZoom = (z) => onChange({ coverZoom: z, coverFX: curFx, coverFY: curFy });
   return (
     <div className="cover-crop">
       <div ref={boxRef} className="cover-crop-box" style={{ aspectRatio: String(aspect) }} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
         title="拖曳移動取景位置">
-        <div className="cover-crop-img" style={{ backgroundImage: `url("${url}")`, '--cx': `${x}%`, '--cy': `${y}%`, '--cover-zoom': zoom }} />
+        <div className="cover-crop-img focal" style={{ backgroundImage: `url("${url}")`, '--fx': `${curFx}%`, '--fy': `${curFy}%`, '--cover-zoom': zoom }} />
         <div className="cover-crop-hint">拖曳移動</div>
       </div>
       <div className="cover-crop-tools">
         <span className="cover-crop-label">縮放</span>
         <input type="range" min="1" max="3" step="0.05" value={zoom} onChange={e => setZoom(Number(e.target.value))} />
         <span className="cover-crop-zoom">{zoom.toFixed(2)}×</span>
-        <button type="button" className="btn btn-ghost small" onClick={() => onChange({ coverX: 0, coverY: 0, coverZoom: 1 })}>重設</button>
+        <button type="button" className="btn btn-ghost small" onClick={() => onChange({ coverFX: 50, coverFY: 50, coverZoom: 1 })}>重設</button>
       </div>
     </div>
   );
@@ -4201,6 +4531,7 @@ function CoverCropEditor({ url, x, y, zoom, onChange, frame }) {
 
 function EditProjectModal({ project, onClose, onSave, coverFrame }) {
   const [form, setForm] = useState({
+    kind: isSelfProject(project) ? 'self' : 'client',
     title: project.title || '',
     client: project.client || '',
     budget: project.budget || '',
@@ -4213,6 +4544,8 @@ function EditProjectModal({ project, onClose, onSave, coverFrame }) {
     coverX: Number(project.coverX) || 0,
     coverY: Number(project.coverY) || 0,
     coverZoom: Number(project.coverZoom) || 1,
+    coverFX: project.coverFX != null ? Number(project.coverFX) : null,   // 焦點取景（新）；null＝舊資料，沒動過就不改
+    coverFY: project.coverFY != null ? Number(project.coverFY) : null,
     workPeriods: Array.isArray(project.workPeriods) ? project.workPeriods.map(w => ({ start: w.start || '', end: w.end || '' })) : [],
   });
   const [uploading, setUploading] = useState(false);
@@ -4234,7 +4567,7 @@ function EditProjectModal({ project, onClose, onSave, coverFrame }) {
       const path = await uploadCoverImage(project.id, file);
       setForm(f => {
         if (f.coverPath && f.coverPath !== project.coverPath) deleteCoverImage(f.coverPath); // 這次視窗裡傳過、還沒存的舊圖
-        return { ...f, coverPath: path, coverX: 0, coverY: 0, coverZoom: 1 };
+        return { ...f, coverPath: path, coverX: 0, coverY: 0, coverZoom: 1, coverFX: 50, coverFY: 50 };
       });
     } catch (err) {
       alert('劇照上傳失敗：' + (err && err.message ? err.message : err) + '\n\n如果是第一次用，請先到 Supabase 後台建立 "' + COVER_BUCKET + '" 這個 bucket。');
@@ -4244,25 +4577,38 @@ function EditProjectModal({ project, onClose, onSave, coverFrame }) {
     }
   };
 
-  const valid = form.title.trim() && form.client.trim() && form.budget && form.due;
+  const isSelf = form.kind === 'self';
+  const wasSelf = isSelfProject(project);
+  const valid = form.title.trim() && form.client.trim() && form.due && (isSelf || form.budget);
 
   const submit = (e) => {
     e.preventDefault();
     if (!valid) return;
     if (project.coverPath && project.coverPath !== form.coverPath) deleteCoverImage(project.coverPath);
+    // 性質切換：Mission X → 委託案（開始有收入）時，若還沒有收款排程就建立預設的頭款／尾款；
+    // 委託案 → Mission X 時不刪任何收款資料（只是不再計算），改回來就原樣恢復。
+    const kindPatch = isSelf ? { kind: 'self' } : { kind: 'client' };
+    if (!isSelf && wasSelf && !(Array.isArray(project.payments) && project.payments.length > 0)) {
+      kindPatch.payments = [
+        { id: uid('pay'), label: '頭期款', percentage: 50, dueDate: form.start || toISODate(TODAY) },
+        { id: uid('pay'), label: '尾款',   percentage: 50, dueDate: form.due || '' },
+      ];
+    }
     onSave({
+      ...kindPatch,
       title: form.title.trim(),
       client: form.client.trim(),
-      budget: Number(form.budget),
+      budget: isSelf ? (Number(project.budget) || 0) : Number(form.budget),
       start: form.start,
       due: form.due,
       extendedDue: form.extendedDue || '',
       completedAt: form.completedAt || '',
       color: form.color,
       coverPath: form.coverPath || '',
-      coverX: form.coverX || 0,
-      coverY: form.coverY || 0,
+      coverX: form.coverFX != null ? 0 : (form.coverX || 0),
+      coverY: form.coverFX != null ? 0 : (form.coverY || 0),
       coverZoom: form.coverZoom || 1,
+      ...(form.coverFX != null ? { coverFX: form.coverFX, coverFY: form.coverFY } : {}),
       workPeriods: form.workPeriods.filter(w => w.start).map(w => ({ start: w.start, end: w.end || '' })),
     });
   };
@@ -4274,26 +4620,34 @@ function EditProjectModal({ project, onClose, onSave, coverFrame }) {
         <h2>編輯專案資訊</h2>
         <div className="modal-sub">修改後按「儲存」即可更新</div>
         <form className="modal-form" onSubmit={submit}>
+          <KindToggle value={form.kind} onChange={k => setForm(f => ({ ...f, kind: k, client: (k === 'self') === wasSelf ? (project.client || '') : '', budget: k === 'self' ? f.budget : (wasSelf ? '' : f.budget) }))} />
           <div className="field">
             <label className="field-label">專案名稱</label>
             <input className="input" autoFocus value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} />
           </div>
+          {isSelf ? (
+            <PurposeField key="purpose" value={form.client} onChange={v => setForm(f => ({ ...f, client: v }))} />
+          ) : (
           <div className="field">
             <label className="field-label">客戶名稱</label>
             <input className="input" value={form.client} onChange={e => setForm({ ...form, client: e.target.value })} />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          )}
+          <div style={{ display: 'grid', gridTemplateColumns: isSelf ? '1fr' : '1fr 1fr', gap: 12 }}>
+            {!isSelf && (
             <div className="field">
               <label className="field-label">合約金額 (NT$)</label>
               <MoneyInput className="input" value={form.budget} onChange={v => setForm({ ...form, budget: v })} />
+              {wasSelf && <div className="field-hint">從 Mission X 改成委託案：填上客戶要付的金額，系統會建立頭款／尾款各 50%，之後可在「$」面板調整。</div>}
             </div>
+            )}
             <div className="field">
               <label className="field-label">起始日期</label>
               <input className="date-input" type="date" value={form.start} onChange={e => setForm({ ...form, start: e.target.value })} />
             </div>
           </div>
           <div className="field">
-            <label className="field-label">交件日期（原定）</label>
+            <label className="field-label">{isSelf ? '上線日（原定）' : '交件日期（原定）'}</label>
             <input className="date-input" type="date" value={form.due} onChange={e => setForm({ ...form, due: e.target.value })} />
           </div>
           <div className="field">
@@ -4347,7 +4701,7 @@ function EditProjectModal({ project, onClose, onSave, coverFrame }) {
             <div className={`cover-field ${form.coverPath ? 'has-img' : ''}`}>
               {form.coverPath
                 ? (coverPreviewUrl
-                    ? <CoverCropEditor url={coverPreviewUrl} x={form.coverX} y={form.coverY} zoom={form.coverZoom} frame={coverFrame}
+                    ? <CoverCropEditor url={coverPreviewUrl} x={form.coverX} y={form.coverY} fx={form.coverFX} fy={form.coverFY} zoom={form.coverZoom} frame={coverFrame}
                         onChange={(v) => setForm(f => ({ ...f, ...v }))} />
                     : <div className="cover-preview empty">載入中…</div>)
                 : <div className="cover-preview empty">尚未上傳</div>}
@@ -4460,17 +4814,67 @@ function CashflowSettingsModal({ settings, onClose, onSave }) {
   );
 }
 
+// Mission X 的「目的」：下拉選單＋自訂（存在 client 欄位，舊版本打開也看得到）
+function PurposeField({ value, onChange }) {
+  const isCustom = !!value && !SELF_PURPOSES.includes(value);
+  const [custom, setCustom] = useState(isCustom);
+  return (
+    <div className="field">
+      <label className="field-label">目的</label>
+      <select className="input select" value={custom ? '__custom' : (value || '')}
+        onChange={e => { if (e.target.value === '__custom') { setCustom(true); onChange(''); } else { setCustom(false); onChange(e.target.value); } }}>
+        <option value="" disabled>選擇目的…</option>
+        {SELF_PURPOSES.map(x => <option key={x} value={x}>{x}</option>)}
+        <option value="__custom">自訂…</option>
+      </select>
+      {custom && <input className="input" style={{ marginTop: 8 }} autoFocus value={value} placeholder="例：做給未來客戶看的樣片" onChange={e => onChange(e.target.value)} />}
+    </div>
+  );
+}
+function KindToggle({ value, onChange }) {
+  return (
+    <div className="field">
+      <label className="field-label">案子性質</label>
+      <div className="type-toggle kind-toggle">
+        <button type="button" className={value !== 'self' ? 'on' : ''} onClick={() => onChange('client')}>委託案</button>
+        <button type="button" className={value === 'self' ? 'on' : ''} onClick={() => onChange('self')}>Mission X</button>
+      </div>
+      <div className="field-hint">
+        {value === 'self'
+          ? '自己發起、目前沒有收入的案子。有委託案在跑的月份，固定支出由委託案負擔；只有 Mission X 在做的月份，那個月的固定支出算成這個案子的投入。'
+          : '客戶付錢委託的案子，照原本的方式算合約、收款與損益。'}
+      </div>
+    </div>
+  );
+}
+
 function NewProjectModal({ onClose, onCreate }) {
-  const [form, setForm] = useState({ title: '', client: '', budget: '', due: '' });
+  const [form, setForm] = useState({ kind: 'client', template: 'animation', title: '', client: '', budget: '', start: toISODate(TODAY), due: '' });
   const titleRef = useRef(null);
   useEffect(() => { titleRef.current?.focus(); }, []);
+  const isSelf = form.kind === 'self';
 
-  const valid = form.title.trim() && form.client.trim() && form.budget && form.due;
+  const valid = form.title.trim() && form.client.trim() && form.due && (isSelf || form.budget);
 
   const submit = (e) => {
     e.preventDefault();
     if (!valid) return;
+    if (isSelf) {
+      onCreate({
+        kind: 'self',
+        template: form.template,
+        title: form.title.trim(),
+        client: form.client.trim(),   // Mission X：這欄放「目的」
+        budget: 0,
+        start: form.start || toISODate(TODAY),
+        due: form.due,
+        payments: [],
+        outsourcePayDate: '',
+      });
+      return;
+    }
     onCreate({
+      template: form.template,
       title: form.title.trim(),
       client: form.client.trim(),
       budget: Number(form.budget),
@@ -4482,16 +4886,40 @@ function NewProjectModal({ onClose, onCreate }) {
     <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal">
         <h2>新增專案</h2>
-        <div className="modal-sub">系統會自動建立六個標準階段與預設檢查項目</div>
+        <div className="modal-sub">{(!isSelf && form.template === 'animation') ? '系統會自動建立六個標準階段與預設檢查項目' : '系統會建立模板的工作階段，工作項目先留空，之後再自己加'}</div>
         <form className="modal-form" onSubmit={submit}>
+          <KindToggle value={form.kind} onChange={k => setForm({ ...form, kind: k, client: '' })} />
+          <div className="field">
+            <label className="field-label">模板</label>
+            <select className="input select" value={form.template} onChange={e => setForm({ ...form, template: e.target.value })}>
+              {PROJECT_TEMPLATES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+            </select>
+            <div className="field-hint">決定有哪些工作階段：{getProjectTemplate(form.template).stages.map(x => x.label).join('、')}。建好後可以改名、增減階段。</div>
+          </div>
           <div className="field">
             <label className="field-label">專案名稱</label>
-            <input ref={titleRef} className="input" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} placeholder="例：黏土廚房" />
+            <input ref={titleRef} className="input" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} placeholder={isSelf ? '例：Cinematic Vlog 第一季' : '例：黏土廚房'} />
           </div>
-          <div className="field">
-            <label className="field-label">客戶名稱</label>
-            <input className="input" value={form.client} onChange={e => setForm({ ...form, client: e.target.value })} placeholder="例：五十嵐 飲料品牌" />
-          </div>
+          {isSelf ? (
+            <PurposeField value={form.client} onChange={v => setForm(f => ({ ...f, client: v }))} />
+          ) : (
+            <div className="field">
+              <label className="field-label">客戶名稱</label>
+              <input className="input" value={form.client} onChange={e => setForm({ ...form, client: e.target.value })} placeholder="例：五十嵐 飲料品牌" />
+            </div>
+          )}
+          {isSelf ? (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div className="field">
+                <label className="field-label">起始日期</label>
+                <input className="date-input" type="date" value={form.start} onChange={e => setForm({ ...form, start: e.target.value })} />
+              </div>
+              <div className="field">
+                <label className="field-label">上線日</label>
+                <input className="date-input" type="date" value={form.due} min={form.start || undefined} onChange={e => setForm({ ...form, due: e.target.value })} />
+              </div>
+            </div>
+          ) : (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div className="field">
               <label className="field-label">金額 (NT$)</label>
@@ -4502,6 +4930,7 @@ function NewProjectModal({ onClose, onCreate }) {
               <input className="date-input" type="date" value={form.due} onChange={e => setForm({ ...form, due: e.target.value })} />
             </div>
           </div>
+          )}
           <div className="modal-actions">
             <button type="button" className="btn btn-ghost" onClick={onClose}>取消 (Esc)</button>
             <button type="submit" className="btn btn-primary" disabled={!valid}>建立專案</button>
@@ -5082,7 +5511,7 @@ function VatOverviewSection({ vatPeriods }) {
               </thead>
               <tbody>
                 {vatPeriods.map(p => (
-                  <tr key={p.key}>
+                  <tr key={p.periodLabel}>
                     <td className="vat-period-label">{p.periodLabel}</td>
                     <td className="num">{p.salesVAT > 0 ? fmtNT(p.salesVAT) : '—'}</td>
                     <td className="num">{p.inputVAT > 0 ? `− ${fmtNT(p.inputVAT)}` : '—'}</td>
@@ -5979,7 +6408,7 @@ function buildPaymentRows(projects) {
     (p.outsources || []).forEach(function(o) {
       if (!o || (Number(o.amount) || 0) === 0) return;
       var paid = isOutsourcePaid(o);
-      var effDate = paid ? (o.paidDate || '') : getOutsourcePayDate(p);
+      var effDate = paid ? (o.paidDate || '') : getOutsourceItemPayDate(p, o);
       var dateObj = effDate ? new Date(effDate) : null;
       if (dateObj) dateObj.setHours(0, 0, 0, 0);
       var bucket;
@@ -6007,7 +6436,7 @@ function buildPaymentRows(projects) {
         amount: Number(o.amount) || 0,
         paid: paid,
         paidDate: paid ? (o.paidDate || '') : null,
-        predictedDate: getOutsourcePayDate(p),
+        predictedDate: getOutsourceItemPayDate(p, o),
         effDate: effDate,
         daysOverdue: (!paid && dateObj && dateObj < today) ? Math.round((today - dateObj) / 86400000) : 0,
         bucket: bucket,
@@ -6620,7 +7049,13 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
     [allProjects, projects, monthlyFixed]
   );
 
-  const rows = projects.map(p => {
+  // Mission X 不進損益表（沒有收入，不是虧損），另外列在下方「Mission X 投入」
+  const selfRows = projects.filter(isSelfProject).map(p => {
+    const c = calcCosts(p, allocations[p.id], monthlyFixed, 0);
+    return { id: p.id, title: p.title, purpose: p.client, archived: !!p.archived, time: c.fixedCost, cash: c.outsourceTotal, total: c.investTotal };
+  });
+  const selfTotal = selfRows.reduce((a, r) => a + r.total, 0);
+  const rows = projects.filter(p => !isSelfProject(p)).map(p => {
     const c = calcCosts(p, allocations[p.id], monthlyFixed, overtimeAlloc[p.id]);
     return {
       id: p.id,
@@ -6737,6 +7172,37 @@ function FinancePage({ projects, allProjects, settings, onOpenSettings, onUpdate
           )
         )}
       </section>
+      )}
+
+      {sub === 'pnl' && selfRows.length > 0 && (
+        <section className="finance-summary self-summary">
+          <div className="page-section-header">
+            <h3 className="page-section-title">Mission X 投入</h3>
+            <span className="cashflow-stat">合計 <strong className="invest-num">{fmtNT(selfTotal)}</strong>{monthlyFixed > 0 ? `（約 ${(selfTotal / monthlyFixed).toFixed(1)} 個月固定支出）` : ''}</span>
+          </div>
+          <div className="finance-table self-table">
+            <div className="finance-row head">
+              <div>專案 / 目的</div>
+              <div className="num">時間（固定支出）</div>
+              <div className="num">現金（直接支出）</div>
+              <div className="num">總投入</div>
+            </div>
+            {selfRows.map(r => (
+              <div key={r.id} className={`finance-row clickable ${r.archived ? 'is-archived' : ''}`}
+                onClick={() => setDetailId(r.id)} title="點開看逐月投入與支出" role="button" tabIndex={0}
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setDetailId(r.id); } }}>
+                <div className="finance-name-cell">
+                  <div className="finance-title">{r.title}{r.archived && <span className="finance-archived-tag">已上線</span>}</div>
+                  <div className="finance-client">{r.purpose}</div>
+                </div>
+                <div className="num" data-label="時間（固定支出）">{fmtNT(r.time)}</div>
+                <div className="num" data-label="現金（直接支出）">{fmtNT(r.cash)}</div>
+                <div className="num strong invest-num" data-label="總投入">{fmtNT(r.total)}</div>
+              </div>
+            ))}
+          </div>
+          <div className="self-rule">有委託案在跑的月份，固定支出由委託案負擔（算在上面的損益表）；只有 Mission X 在做的月份，那個月的固定支出算成 Mission X 的投入。</div>
+        </section>
       )}
 
       {sub === 'fixed' && (
@@ -6863,6 +7329,170 @@ function SaveIndicator({ settingsError, onReloadPage }) {
   );
 }
 
+// ---------- 星空聚焦模式（2026-11-03）----------
+// 夜空、流星、主力專案邊緣的沙粒光點，全部畫在同一張畫布上（每一格本來就要重畫，所以多做的事幾乎不花力氣）。
+// 專案頁＋有滑鼠：畫布蓋在頁面上面，只有主力專案浮在它上方；畫布在游標位置挖一個柔邊的洞＝手電筒。
+// 其他頁面：夜空留在內容後面、畫一次就停（那些頁面有很多毛玻璃，背後一直動會很吃效能）。
+// 觸控裝置沒有游標：不做手電筒，退回「其他專案變暗」。
+function StarSky({ active, onProjects }) {
+  const ref = useRef(null);
+  const st = useRef({ active, onProjects, kick: null });
+  st.current.active = active; st.current.onProjects = onProjects;
+  useEffect(() => { if (st.current.kick) st.current.kick(); }, [active, onProjects]);
+  useEffect(() => {
+    const cv = ref.current; if (!cv) return;
+    const ctx = cv.getContext('2d');
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const canHover = window.matchMedia('(hover: hover)').matches;
+    let W = 0, H = 0, DPR = 1, layer = null, twinkle = [], raf = 0, last = 0, nextMeteor = 2, offSince = 0;
+    const meteors = [], parts = [];
+    const PCOL = ['rgb(255,248,222)', 'rgb(252,240,196)'];   // 光點：淺、亮、低飽和的黃（使用者 2026-11-03）
+    const mouse = { x: 0, y: 0, in: false }, light = { x: 0, y: 0, a: 0 };
+    const build = () => {
+      DPR = Math.min(window.devicePixelRatio || 1, 1.5);   // 全螢幕畫布每一格都要合成：上限 1.5 倍，像素少將近一半，看起來幾乎一樣
+      W = window.innerWidth; H = window.innerHeight;
+      cv.width = W * DPR; cv.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      // 不會動的星星先畫在離屏畫布上，每一格只貼上去
+      layer = document.createElement('canvas'); layer.width = W * DPR; layer.height = H * DPR;
+      const g2 = layer.getContext('2d'); g2.setTransform(DPR, 0, 0, DPR, 0, 0);
+      const bg = g2.createLinearGradient(0, 0, 0, H);   // 接近純黑，只帶一點藍
+      bg.addColorStop(0, '#010206'); bg.addColorStop(.6, '#02040a'); bg.addColorStop(1, '#03050d');
+      g2.fillStyle = bg; g2.fillRect(0, 0, W, H);
+      const neb = g2.createRadialGradient(W * .7, H * .25, 0, W * .7, H * .25, Math.max(W, H) * .5);
+      neb.addColorStop(0, 'rgba(40,60,120,.07)'); neb.addColorStop(1, 'rgba(40,60,120,0)');
+      g2.fillStyle = neb; g2.fillRect(0, 0, W, H);
+      twinkle = [];
+      const n = Math.round(W * H / 2600);
+      for (let i = 0; i < n; i++) {
+        const x = Math.random() * W, y = Math.random() * H;
+        const r = Math.random() < .08 ? 1.3 + Math.random() * .7 : .3 + Math.random() * .8;
+        if (i % 6 === 0) twinkle.push({ x, y, r, ph: Math.random() * 6.28, sp: .6 + Math.random() * 1.6 });
+        else { g2.globalAlpha = .25 + Math.random() * .6; g2.fillStyle = '#e8ecff'; g2.beginPath(); g2.arc(x, y, r, 0, 6.283); g2.fill(); }
+      }
+      g2.globalAlpha = 1;
+    };
+    const perimeter = (r) => {
+      const P = 2 * (r.width + r.height); let t = Math.random() * P;
+      if (t < r.width) return { x: r.left + t, y: r.top, nx: 0, ny: -1 };
+      t -= r.width; if (t < r.height) return { x: r.right, y: r.top + t, nx: 1, ny: 0 };
+      t -= r.height; if (t < r.width) return { x: r.right - t, y: r.bottom, nx: 0, ny: 1 };
+      t -= r.width; return { x: r.left, y: r.bottom - t, nx: -1, ny: 0 };
+    };
+    const frame = (now) => {
+      raf = 0;
+      const s = st.current;
+      const dt = Math.min(.05, (now - (last || now)) / 1000); last = now;
+      const t = now / 1000;
+      const live = s.active && s.onProjects;          // 只有專案頁才動
+      ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+      ctx.clearRect(0, 0, W, H); ctx.drawImage(layer, 0, 0, W, H);
+      for (const z of twinkle) {
+        ctx.globalAlpha = (live && !reduce) ? .35 + .65 * (.5 + .5 * Math.sin(t * z.sp + z.ph)) : .7;
+        ctx.fillStyle = '#f4f6ff'; ctx.beginPath(); ctx.arc(z.x, z.y, z.r, 0, 6.283); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+      // 手電筒：在夜空上挖一個柔邊的洞，洞裡露出底下的頁面
+      if (live && canHover) {
+        const ease = reduce ? 1 : Math.min(1, dt * 14);
+        light.x += (mouse.x - light.x) * ease; light.y += (mouse.y - light.y) * ease;
+        light.a += ((mouse.in ? 1 : 0) - light.a) * (reduce ? 1 : Math.min(1, dt * 6));
+        if (light.a > .01) {
+          const R = 210;
+          ctx.globalCompositeOperation = 'destination-out';
+          const hole = ctx.createRadialGradient(light.x, light.y, 0, light.x, light.y, R);
+          hole.addColorStop(0, `rgba(0,0,0,${.97 * light.a})`); hole.addColorStop(.45, `rgba(0,0,0,${.8 * light.a})`); hole.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.fillStyle = hole; ctx.fillRect(light.x - R, light.y - R, R * 2, R * 2);
+          ctx.globalCompositeOperation = 'source-over';
+        }
+      }
+      if (live && !reduce) {
+        // 流星：平均每 5 秒一顆，從右上往左下
+        nextMeteor -= dt;
+        if (nextMeteor <= 0) {
+          const ang = (205 + Math.random() * 20) * Math.PI / 180, sp = 650 + Math.random() * 450;
+          meteors.push({ x: W * (.35 + Math.random() * .7), y: -20 + Math.random() * H * .25, vx: Math.cos(ang) * sp, vy: -Math.sin(ang) * sp, life: 0, max: .9 + Math.random() * .6, len: 120 + Math.random() * 140 });
+          nextMeteor = 5 * (.5 + Math.random());
+        }
+        ctx.globalCompositeOperation = 'lighter';
+        for (let i = meteors.length - 1; i >= 0; i--) {
+          const m = meteors[i]; m.life += dt; m.x += m.vx * dt; m.y += m.vy * dt;
+          const k = m.life / m.max; if (k >= 1) { meteors.splice(i, 1); continue; }
+          const fade = k < .15 ? k / .15 : 1 - (k - .15) / .85;
+          const v = Math.hypot(m.vx, m.vy), tx = m.x - m.vx / v * m.len, ty = m.y - m.vy / v * m.len;
+          const gr = ctx.createLinearGradient(m.x, m.y, tx, ty);
+          gr.addColorStop(0, `rgba(255,250,235,${.95 * fade})`); gr.addColorStop(.25, `rgba(200,215,255,${.45 * fade})`); gr.addColorStop(1, 'rgba(160,180,255,0)');
+          ctx.strokeStyle = gr; ctx.lineWidth = 1.8; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(m.x, m.y); ctx.lineTo(tx, ty); ctx.stroke();
+          ctx.fillStyle = `rgba(255,252,240,${fade})`; ctx.beginPath(); ctx.arc(m.x, m.y, 1.6, 0, 6.283); ctx.fill();
+        }
+        // 主力專案邊緣的沙粒光點：實心、很小，約四成會隨機閃
+        document.querySelectorAll('.card.starred').forEach((el) => {
+          const r = el.getBoundingClientRect(); if (r.bottom < -40 || r.top > H + 40 || !r.width) return;
+          // 依卡片邊長算密度（每 px 邊長每秒 0.034 顆）：視窗變寬、卡片變長時光點跟著變多，看起來的密度不變。
+          // 全螢幕（卡片約 1900px 寬）約每秒 140 顆＝舊設定的 2.5 倍（使用者 2026-11-03）
+          let n = 2 * (r.width + r.height) * 0.034 * dt;
+          while (n > 0) {
+            if (parts.length < 3000 && Math.random() < n) {
+              const q = perimeter(r), sp = 6 + Math.random() * 20;
+              parts.push({ x: q.x, y: q.y, vx: q.nx * sp + (Math.random() - .5) * 8, vy: q.ny * sp - 4 - Math.random() * 8,
+                life: 0, max: 1.2 + Math.random() * 1.8, s: Math.random() < .75 ? 1 : 1.5,
+                tw: Math.random() < .4, ph: Math.random() * 6.28, f: 8 + Math.random() * 18, c: Math.random() < .5 ? 0 : 1, a: 0 });   // 顏色見 PCOL
+            }
+            n -= 1;
+          }
+        });
+        // 光點多了以後的省力畫法：熄掉的用「最後一顆補位」移除（不用 splice 整排搬動）；
+        // 顏色只有兩種，分兩輪畫，每顆只改透明度（不用每顆組一次顏色字串）
+        for (let i = parts.length - 1; i >= 0; i--) {
+          const q = parts[i]; q.life += dt;
+          if (q.life >= q.max) { parts[i] = parts[parts.length - 1]; parts.pop(); continue; }
+          q.x += q.vx * dt; q.y += q.vy * dt; q.vx *= .985; q.vy *= .985;
+          const k = q.life / q.max; let a = k < .15 ? k / .15 : 1 - (k - .15) / .85;
+          if (q.tw) a *= Math.random() < .12 ? .15 : (.55 + .45 * Math.sin(t * q.f + q.ph));
+          q.a = a;
+        }
+        for (let c = 0; c < 2; c++) {
+          ctx.fillStyle = PCOL[c];
+          for (let i = 0; i < parts.length; i++) {
+            const q = parts[i]; if (q.c !== c || q.a <= 0) continue;
+            ctx.globalAlpha = q.a;
+            ctx.fillRect(Math.round(q.x), Math.round(q.y), q.s, q.s);
+          }
+        }
+        ctx.globalAlpha = 1;
+        ctx.globalCompositeOperation = 'source-over';
+      } else { meteors.length = 0; parts.length = 0; }
+      // 要不要繼續畫：專案頁一直畫；其他頁畫完這一張就停；關掉後等淡出（1.3 秒）再停
+      if (live) { offSince = 0; raf = requestAnimationFrame(frame); return; }
+      if (!s.active) {
+        if (!offSince) offSince = now;
+        if (now - offSince < 1300) { raf = requestAnimationFrame(frame); return; }
+      }
+      offSince = 0;
+    };
+    const kick = () => { if (!raf) { last = 0; raf = requestAnimationFrame(frame); } };
+    st.current.kick = kick;
+    const onResize = () => { build(); kick(); };
+    const onMove = (e) => { mouse.x = e.clientX; mouse.y = e.clientY; if (!mouse.in) { light.x = mouse.x; light.y = mouse.y; } mouse.in = true; };
+    const onLeave = () => { mouse.in = false; };
+    const onVis = () => { if (!document.hidden) kick(); };
+    build();
+    if (st.current.active) kick();
+    window.addEventListener('resize', onResize);
+    window.addEventListener('pointermove', onMove, { passive: true });
+    document.documentElement.addEventListener('pointerleave', onLeave);
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+      st.current.kick = null;
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('pointermove', onMove);
+      document.documentElement.removeEventListener('pointerleave', onLeave);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, []);
+  return <canvas ref={ref} className="star-sky" aria-hidden="true" />;
+}
+
 // ---------- Main app (auth wrapper) ----------
 function App() {
   const [session, setSession] = useState(null);
@@ -6886,7 +7516,7 @@ function App() {
 
 function Tracker({ session, onSignOut }) {
   // 登入者 id：App 早就拿到了，直接往下傳，省掉每次讀寫設定都要再打一次驗證請求
-  const uid = session?.user?.id;
+  const userId = session?.user?.id;
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
   const [projects, _setProjectsRaw] = useState([]);
   const [dataReady, setDataReady] = useState(false);
@@ -6941,7 +7571,7 @@ function Tracker({ session, onSignOut }) {
     // 設定沒載入成功時不要回寫，否則會用空設定覆蓋資料庫
     if (!settingsErrorRef.current && prev.settings) {
       _setGlobalSettingsRaw(prev.settings);
-      saveUserSettings(prev.settings, uid);
+      saveUserSettings(prev.settings, userId);
     }
   };
   useEffect(() => {
@@ -7001,7 +7631,7 @@ function Tracker({ session, onSignOut }) {
   // Load global cash-flow settings on mount
   useEffect(() => {
     let cancelled = false;
-    loadUserSettings(uid)
+    loadUserSettings(userId)
       .then(s => { if (!cancelled) { _setGlobalSettingsRaw(s || {}); setSettingsError(null); } })
       .catch(err => {
         if (cancelled) return;
@@ -7011,11 +7641,11 @@ function Tracker({ session, onSignOut }) {
         setSettingsError(err.message || '無法連線');
       });
     return () => { cancelled = true; };
-  }, [uid]);
+  }, [userId]);
 
   const retrySettingsLoad = () => {
     setSettingsError(null);
-    loadUserSettings(uid)
+    loadUserSettings(userId)
       .then(s => { _setGlobalSettingsRaw(s || {}); setSettingsError(null); })
       .catch(err => setSettingsError(err.message || '無法連線'));
   };
@@ -7037,7 +7667,7 @@ function Tracker({ session, onSignOut }) {
     if (!canWriteSettings()) return;
     const next = { ...globalSettings, ...patch };
     setGlobalSettings(next);
-    saveUserSettings(next, uid);
+    saveUserSettings(next, userId);
     setShowCashSettings(false);
   };
 
@@ -7045,21 +7675,21 @@ function Tracker({ session, onSignOut }) {
     if (!canWriteSettings()) return;
     const next = { ...globalSettings, extraExpenses: nextList };
     setGlobalSettings(next);
-    saveUserSettings(next, uid);
+    saveUserSettings(next, userId);
   };
 
   const onUpdateCustomCategories = (nextList) => {
     if (!canWriteSettings()) return;
     const next = { ...globalSettings, customExpenseCategories: nextList };
     setGlobalSettings(next);
-    saveUserSettings(next, uid);
+    saveUserSettings(next, userId);
   };
 
   const onUpdateCustomOutsourceRoles = (nextList) => {
     if (!canWriteSettings()) return;
     const next = { ...globalSettings, customOutsourceRoles: nextList };
     setGlobalSettings(next);
-    saveUserSettings(next, uid);
+    saveUserSettings(next, userId);
   };
 
   // 玻璃的動態高光：把游標相對位置寫進該塊玻璃的 CSS 變數（--mx / --my）
@@ -7078,6 +7708,20 @@ function Tracker({ session, onSignOut }) {
         if (!r.width) return;
         el.style.setProperty('--mx', ((ev.clientX - r.left) / r.width * 100).toFixed(1) + '%');
         el.style.setProperty('--my', ((ev.clientY - r.top) / r.height * 100).toFixed(1) + '%');
+        // 卡片的光暈改用位移（px）移動一顆固定大小的光，不重畫漸層，滑起來才順（2026-11-03）
+        // 游標可能在卡片裡的小元件上（倒數、標籤列…），所以卡片本身與它的頭部各自算一次
+        const card = ev.target.closest('.card');
+        if (card) {
+          const cr = card.getBoundingClientRect();
+          card.style.setProperty('--mxp', Math.round(ev.clientX - cr.left) + 'px');
+          card.style.setProperty('--myp', Math.round(ev.clientY - cr.top) + 'px');
+          const hero = card.querySelector('.card-hero');
+          if (hero) {
+            const hr = hero.getBoundingClientRect();
+            hero.style.setProperty('--mxp', Math.round(ev.clientX - hr.left) + 'px');
+            hero.style.setProperty('--myp', Math.round(ev.clientY - hr.top) + 'px');
+          }
+        }
       });
     };
     document.addEventListener('pointermove', onMove, { passive: true });
@@ -7187,9 +7831,14 @@ function Tracker({ session, onSignOut }) {
     }
   }, [projects, dataReady]);
 
+  // 星空聚焦模式：記在本機（純顯示偏好，不進資料庫）。開著的時候一律用深色。
+  const [starMode, setStarModeRaw] = useState(() => { try { return localStorage.getItem('jt745-star-mode') === '1'; } catch (e) { return false; } });
+  const setStarMode = (v) => { setStarModeRaw(v); try { localStorage.setItem('jt745-star-mode', v ? '1' : '0'); } catch (e) {} };
+  const canHover = useMemo(() => { try { return window.matchMedia('(hover: hover)').matches; } catch (e) { return true; } }, []);
+
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', t.darkMode ? 'dark' : 'light');
-  }, [t.darkMode]);
+    document.documentElement.setAttribute('data-theme', (t.darkMode || starMode) ? 'dark' : 'light');
+  }, [t.darkMode, starMode]);
 
   useEffect(() => {
     const fontMap = {
@@ -7228,13 +7877,15 @@ function Tracker({ session, onSignOut }) {
             onUpdateProject(focusedProjectId, { infoOpen: false, costsOpen: false });
           }
         }
+        else if (starMode) setStarMode(false);   // 沒有別的東西可以關時，Esc 離開星空模式
       }
+      if (!inField && (e.key === 'f' || e.key === 'F') && !e.metaKey && !e.ctrlKey) { e.preventDefault(); setStarMode(!starMode); }
       if (!inField && (e.key === 'n' || e.key === 'N')) { e.preventDefault(); setShowNew(true); }
       if (!inField && (e.key === 'd' || e.key === 'D')) { e.preventDefault(); setTweak('darkMode', !t.darkMode); }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [showNew, expanded, t.darkMode, focusedProjectId, projects]);
+  }, [showNew, expanded, t.darkMode, focusedProjectId, projects, starMode]);
 
   useEffect(() => { const id = setTimeout(() => setShowHint(false), 8000); return () => clearTimeout(id); }, []);
 
@@ -7373,7 +8024,7 @@ function Tracker({ session, onSignOut }) {
     if (expanded?.stageId === stageId) setExpanded(null);
   };
   const onInsertStage = (projectId, atIdx) => {
-    const newStage = makeStage({ emoji: '✨', label: '新階段', items: ['新增第一項'] }, 'todo');
+    const newStage = makeStage({ emoji: '', label: '新階段', items: [] }, 'todo');
     setProjects(prev => {
       const next = prev.map(p => {
         if (p.id !== projectId) return p;
@@ -7389,7 +8040,11 @@ function Tracker({ session, onSignOut }) {
   };
 
   const onCreate = async (data) => {
-    const stages = DEFAULT_STAGES_TPL.map(tpl => makeStage(tpl));
+    // Mission X：六個階段照舊，但工作項目先留空——類型多、跟商案的工作內容不一定相同，
+    // 等實際做過幾支、找出高度重複的項目再訂預設（使用者 2026-11-03）。需要時仍可用「+ 從預設加入…」挑商案的項目。
+    const isMission = data.kind === 'self';
+    const tplSet = getProjectTemplate(data.template);
+    const stages = tplSet.stages.map(tpl => makeStage(isMission ? { ...tpl, items: [] } : tpl));
     const startISO = data.start || toISODate(TODAY);
     const dueISO = data.due || '';
     const projectData = {
@@ -7484,13 +8139,17 @@ function Tracker({ session, onSignOut }) {
     [projects, monthlyFixedExpense]
   );
 
-  const totalBudget = activeProjects.reduce((a, p) => a + p.budget, 0);
+  // 合計金額與預估淨利只算委託案；Mission X 另列「Mission X 投入」，不當成虧損扣掉
+  const clientActive = activeProjects.filter(p => !isSelfProject(p));
+  const selfActive = activeProjects.filter(isSelfProject);
+  const totalBudget = clientActive.reduce((a, p) => a + (Number(p.budget) || 0), 0);
   const urgentCount = activeProjects.filter(p => {
     const effD = p.extendedDue || p.due;
     const d = effD ? daysBetween(TODAY, new Date(effD)) : null;
     return d !== null && d >= 0 && d <= 14;
   }).length;
-  const totalProfit = activeProjects.reduce((a, p) => a + calcCosts(p, fixedCostAllocations[p.id], monthlyFixedExpense, overtimeAllocations[p.id]).profit, 0);
+  const totalProfit = clientActive.reduce((a, p) => a + calcCosts(p, fixedCostAllocations[p.id], monthlyFixedExpense, overtimeAllocations[p.id]).profit, 0);
+  const totalSelfInvest = selfActive.reduce((a, p) => a + calcCosts(p, fixedCostAllocations[p.id], monthlyFixedExpense, 0).investTotal, 0);
 
   const expandedProj = expanded ? projects.find(p => p.id === expanded.projectId) : null;
 
@@ -7498,11 +8157,12 @@ function Tracker({ session, onSignOut }) {
   if (loadError) return <SplashScreen message={`讀取失敗：${loadError}`} />;
 
   return (
-    <div className={`app ${showQuoteSplash && !splashClosing ? 'has-splash' : ''}`}>
+    <div className={`app ${showQuoteSplash && !splashClosing ? 'has-splash' : ''} ${starMode ? 'star-mode' : ''} ${starMode && currentPage === 'projects' ? 'sm-projects' : ''} ${canHover ? 'torch' : ''}`}>
       {/* 玻璃後面的東西：緩慢流動的中性色暈。玻璃要有東西可以折射、模糊、吸色，才不會像色塊 */}
       <div className="ambient" aria-hidden="true">
         <div className="blob b1" /><div className="blob b2" /><div className="blob b3" /><div className="blob b4" />
       </div>
+      <StarSky active={starMode} onProjects={currentPage === 'projects'} />
       {/* 固定在左下角，不分頁面、不隨捲動消失 */}
       <SaveIndicator
         settingsError={settingsError}
@@ -7541,6 +8201,10 @@ function Tracker({ session, onSignOut }) {
           <button className="btn btn-ghost btn-icon" onClick={() => window.postMessage({ type: '__activate_edit_mode' }, '*')} title="顯示設定面板（檢視模式、字體、密度…）">
             ⚙
           </button>
+          <button className={`btn btn-ghost btn-icon star-mode-btn ${starMode ? 'on' : ''}`} onClick={() => setStarMode(!starMode)} aria-pressed={starMode}
+            title={starMode ? '離開星空模式（F 或 Esc）' : '星空模式：只留主力專案，其他地方用滑鼠當手電筒照亮（F）'}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round"><path d="M12 2.8l2.75 5.86 6.4.73-4.76 4.36 1.3 6.32L12 16.9l-5.69 3.17 1.3-6.32L2.85 9.39l6.4-.73z" /></svg>
+          </button>
           <button className="btn btn-ghost btn-icon" onClick={() => setTweak('darkMode', !t.darkMode)} title="切換深淺色 (D)">
             {t.darkMode ? '☀' : '◐'}
           </button>
@@ -7555,7 +8219,8 @@ function Tracker({ session, onSignOut }) {
         </div>
       </header>
 
-      {focusedProjectId && (
+      {/* 遮罩只在專案頁出現：在專案頁開著面板就切到財務／收付款／行事曆時，不能把那些頁面一起蓋暗 */}
+      {focusedProjectId && currentPage === 'projects' && (
         <div
           className="focus-backdrop"
           onClick={() => {
@@ -7580,7 +8245,15 @@ function Tracker({ session, onSignOut }) {
             aria-label="切換導覽"
             aria-expanded={sidebarOpen ? 'true' : 'false'}
           >
-            <svg width="18" height="18" viewBox="0 0 20 20" fill="none">
+            {/* 平常是一顆液態玻璃圓鈕（四格圖示＝切換頁面），一直看得到；滑鼠碰到它（或「進行中」）才變回三條線、分頁一起出現 */}
+            <span className="nav-orb-shine" aria-hidden="true" />
+            <svg className="ico-orb" width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <rect x="3" y="3" width="5.6" height="5.6" rx="1.8" stroke="currentColor" strokeWidth="1.5"/>
+              <rect x="11.4" y="3" width="5.6" height="5.6" rx="1.8" stroke="currentColor" strokeWidth="1.5"/>
+              <rect x="3" y="11.4" width="5.6" height="5.6" rx="1.8" stroke="currentColor" strokeWidth="1.5"/>
+              <rect x="11.4" y="11.4" width="5.6" height="5.6" rx="2.8" fill="currentColor" stroke="currentColor" strokeWidth="1.5"/>
+            </svg>
+            <svg className="ico-burger" width="18" height="18" viewBox="0 0 20 20" fill="none" aria-hidden="true">
               <path d="M3 6h14M3 10h14M3 14h14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
             </svg>
           </button>
@@ -7637,6 +8310,12 @@ function Tracker({ session, onSignOut }) {
                       <span className="sep">·</span>
                       <span>預估淨利 <strong>{fmtNT(totalProfit)}</strong></span>
                       <span className="sep">·</span>
+                      {selfActive.length > 0 && (
+                        <>
+                          <span title="Mission X 的時間（沒有委託案的月份負擔的固定支出）＋ 現金（直接支出）">Mission X 投入 <strong className="invest-num">{fmtNT(totalSelfInvest)}</strong></span>
+                          <span className="sep">·</span>
+                        </>
+                      )}
                     </>
                   )}
                   {!presentation && hideTrophy && archivedProjects.length > 0 && (
@@ -7687,6 +8366,7 @@ function Tracker({ session, onSignOut }) {
                       onUpdateCustomOutsourceRoles={onUpdateCustomOutsourceRoles}
                       onOpenFullFinance={openFinanceDetail}
                       presentation={presentation}
+                      allProjects={projects}
                       isFocused={focusedProjectId === p.id}
                       anyFocused={!!focusedProjectId}
                       onRestore={onRestoreProject}
